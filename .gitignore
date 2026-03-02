@@ -1,0 +1,25 @@
+# UE build artifacts
+Plugin/UELLMToolkit/Binaries/
+Plugin/UELLMToolkit/Intermediate/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+
+# Node modules (MCP bridge)
+Plugin/UELLMToolkit/Resources/mcp-bridge/node_modules/
+Plugin/UELLMToolkit/Resources/mcp-bridge/.env
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Editor/IDE
+*.swp
+*.swo
+*~

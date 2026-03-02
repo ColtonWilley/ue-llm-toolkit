@@ -1,0 +1,41 @@
+// Copyright Natali Caggiano. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Modules/ModuleManager.h"
+#include "UnrealClaudeConstants.h"
+
+DECLARE_LOG_CATEGORY_EXTERN(LogUnrealClaude, Log, All);
+
+class FUnrealClaudeMCPServer;
+
+class FUnrealClaudeModule : public IModuleInterface
+{
+public:
+	/** IModuleInterface implementation */
+	virtual void StartupModule() override;
+	virtual void ShutdownModule() override;
+
+	/** Get the singleton instance */
+	static FUnrealClaudeModule& Get();
+
+	/** Check if module is available */
+	static bool IsAvailable();
+
+	/** Get the MCP server instance */
+	TSharedPtr<FUnrealClaudeMCPServer> GetMCPServer() const { return MCPServer; }
+
+	/** Get MCP server port - checks -MCPPort= command line, falls back to default */
+	static uint32 GetMCPServerPort();
+
+private:
+	void RegisterMenus();
+	void UnregisterMenus();
+	void StartMCPServer();
+	void StopMCPServer();
+
+	TSharedPtr<class FUICommandList> PluginCommands;
+	TSharedPtr<class SDockTab> ClaudeTab;
+	TSharedPtr<FUnrealClaudeMCPServer> MCPServer;
+};
