@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 4,
-	"VersionName": "1.2.2",
+	"Version": 1,
+	"VersionName": "1.0.0",
 	"FriendlyName": "UE LLM Toolkit",
 	"Description": "HTTP REST API plugin for LLM-driven Unreal Engine editor automation. 38 tools, 201 operations — Blueprint editing, animation, materials, level management, and more.",
 	"Category": "Editor",
