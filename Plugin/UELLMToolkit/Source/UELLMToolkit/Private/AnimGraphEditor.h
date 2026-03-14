@@ -345,6 +345,22 @@ public:
 	);
 
 	/**
+	 * Get an internal FAnimNode struct property (or all properties) from an anim graph node.
+	 * If PropertyName is non-empty, returns that single property's value.
+	 * If PropertyName is empty, returns all FAnimNode struct properties (discovery mode).
+	 *
+	 * Works on any UAnimGraphNode_Base-derived node (SequencePlayer, BlendSpacePlayer,
+	 * TwoBoneIK, ModifyBone, etc.)
+	 */
+	static bool GetAnimNodeProperty(
+		UEdGraph* Graph,
+		const FString& NodeId,
+		const FString& PropertyName,
+		TSharedPtr<FJsonObject>& OutResult,
+		FString& OutError
+	);
+
+	/**
 	 * Set an internal FAnimNode struct property on an anim graph node.
 	 * Uses UE reflection to find and set the named property on the node's
 	 * embedded FAnimNode struct (e.g., bLoopAnimation, PlayRate, StartPosition).

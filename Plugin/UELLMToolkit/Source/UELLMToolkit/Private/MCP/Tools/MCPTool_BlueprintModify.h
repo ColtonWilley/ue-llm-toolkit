@@ -56,12 +56,12 @@ public:
 			"Level 2 (Structure): 'create', 'reparent', 'add_variable', 'remove_variable', 'add_function', 'remove_function'\n"
 			"Level 3 (Nodes): 'add_node', 'add_nodes' (batch), 'delete_node'\n"
 			"Level 4 (Wiring): 'connect_pins', 'disconnect_pins', 'set_pin_value'\n"
-			"Level 5 (Defaults): 'set_component_default' - set default property on BP component, 'set_cdo_default' - set top-level CDO property\n"
+			"Level 5 (Defaults): 'set_component_default' - set default property on BP component, 'set_cdo_default' - set top-level CDO property, 'add_component' - add component to BP, 'remove_component' - remove BP-added (SCS) component\n"
 			"Level 6 (Debug): 'add_debug_print' - add labeled debug print subgraph, 'remove_debug_print' - remove by label\n"
 			"Level 7 (Layout): 'layout_graph' - auto-arrange nodes into readable BFS grid layout\n"
 			"Validation: 'compile' - compile single BP with diagnostics, 'compile_all' - batch compile under path\n\n"
 			"Workflow: Use blueprint_query first to understand existing structure, then modify.\n\n"
-			"Node types: CallFunction, Branch, Event, VariableGet, VariableSet, Sequence, "
+			"Node types: CallFunction, Branch, Event, EnhancedInputAction (action_path), VariableGet, VariableSet, Sequence, "
 			"PrintString, Add, Subtract, Multiply, Divide\n\n"
 			"Variable types: bool, int32, float, FString, FVector, FRotator, AActor*, UObject*, etc.\n\n"
 			"Returns: Operation result with created node IDs (for subsequent connections)."
@@ -101,9 +101,9 @@ public:
 			FMCPToolParameter(TEXT("is_function_graph"), TEXT("boolean"),
 				TEXT("True to target function graphs, false for event graphs"), false, TEXT("false")),
 			FMCPToolParameter(TEXT("node_type"), TEXT("string"),
-				TEXT("Node type: 'CallFunction', 'Branch', 'Event', 'VariableGet', 'VariableSet', 'Sequence', 'PrintString', 'Add', 'Subtract', 'Multiply', 'Divide'"), false),
+				TEXT("Node type: 'CallFunction', 'Branch', 'Event', 'EnhancedInputAction', 'VariableGet', 'VariableSet', 'Sequence', 'PrintString', 'Add', 'Subtract', 'Multiply', 'Divide'"), false),
 			FMCPToolParameter(TEXT("node_params"), TEXT("object"),
-				TEXT("Node parameters: {function, target_class, event, variable, num_outputs}"), false),
+				TEXT("Node parameters: {function, target_class, event, variable, num_outputs, action_path}"), false),
 			FMCPToolParameter(TEXT("pos_x"), TEXT("number"),
 				TEXT("Node X position"), false, TEXT("0")),
 			FMCPToolParameter(TEXT("pos_y"), TEXT("number"),
@@ -133,9 +133,17 @@ public:
 			FMCPToolParameter(TEXT("pin_value"), TEXT("string"),
 				TEXT("Default value to set"), false),
 
-			// For set_component_default operation
+			// For add_component operation
+			FMCPToolParameter(TEXT("component_class"), TEXT("string"),
+				TEXT("For 'add_component': component class (e.g., 'StaticMeshComponent', 'SkeletalMeshComponent')"), false),
+			FMCPToolParameter(TEXT("attach_to"), TEXT("string"),
+				TEXT("For 'add_component': parent component variable name to attach to"), false),
+
+			// For set_component_default / add_component / remove_component
 			FMCPToolParameter(TEXT("component_name"), TEXT("string"),
 				TEXT("Component variable name (e.g., 'CameraBoom', 'CharacterMovement0', 'Mesh')"), false),
+			FMCPToolParameter(TEXT("socket_name"), TEXT("string"),
+				TEXT("add_component: bone/socket name to attach to (e.g., 'hand_r')"), false),
 			FMCPToolParameter(TEXT("property"), TEXT("string"),
 				TEXT("Property path with dot notation (e.g., 'RelativeRotation', 'RelativeRotation.Yaw', 'MaxWalkSpeed')"), false),
 			FMCPToolParameter(TEXT("value"), TEXT("any"),
@@ -165,7 +173,11 @@ public:
 			FMCPToolParameter(TEXT("print_to_log"), TEXT("boolean"),
 				TEXT("Print to log (default: true)"), false, TEXT("true")),
 			FMCPToolParameter(TEXT("event"), TEXT("string"),
-				TEXT("Event to hook into (default: 'BlueprintUpdateAnimation')"), false, TEXT("BlueprintUpdateAnimation"))
+				TEXT("Event to hook into (default: 'BlueprintUpdateAnimation')"), false, TEXT("BlueprintUpdateAnimation")),
+
+			// For remove_component operation
+			FMCPToolParameter(TEXT("promote_children"), TEXT("boolean"),
+				TEXT("For 'remove_component': promote first child to replace removed node (default: false)"), false, TEXT("false"))
 		};
 		Info.Annotations = FMCPToolAnnotations::Modifying();
 		return Info;
@@ -192,9 +204,11 @@ private:
 	FMCPToolResult ExecuteDisconnectPins(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteSetPinValue(const TSharedRef<FJsonObject>& Params);
 
-	// Level 5 Operations (Defaults)
+	// Level 5 Operations (Defaults/Components)
 	FMCPToolResult ExecuteSetComponentDefault(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteSetCDODefault(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteAddComponent(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteRemoveComponent(const TSharedRef<FJsonObject>& Params);
 
 	// Level 6 Operations (Debug)
 	FMCPToolResult ExecuteAddDebugPrint(const TSharedRef<FJsonObject>& Params);

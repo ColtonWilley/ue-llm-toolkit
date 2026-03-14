@@ -6,9 +6,12 @@
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/CurveIdentifier.h"
+#include "Animation/AnimSequenceHelpers.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "EditorAssetLibrary.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
 
 TSharedPtr<FJsonObject> FAnimTrackEditor::SuccessResult(const FString& Message)
 {
@@ -48,6 +51,8 @@ TSharedPtr<FJsonObject> FAnimTrackEditor::AdjustTrackSingle(
 	const FName& BoneName,
 	const FVector& LocationOffset,
 	const FQuat& RotationOffsetQuat,
+	const FVector& ScaleOverride,
+	bool bHasScaleOverride,
 	bool bSave)
 {
 	FString LoadError;
@@ -100,6 +105,10 @@ TSharedPtr<FJsonObject> FAnimTrackEditor::AdjustTrackSingle(
 		{
 			Rot = RotationOffsetQuat * Rot;
 		}
+		if (bHasScaleOverride)
+		{
+			Scale = ScaleOverride;
+		}
 
 		PosKeys.Add(FVector3f(Pos));
 		RotKeys.Add(FQuat4f(Rot));
@@ -136,6 +145,8 @@ TSharedPtr<FJsonObject> FAnimTrackEditor::AdjustTrack(
 	const FString& BoneName,
 	const FVector& LocationOffset,
 	const FRotator& RotationOffset,
+	const FVector& ScaleOverride,
+	bool bHasScaleOverride,
 	bool bSave)
 {
 	FName BoneFName(*BoneName);
@@ -147,7 +158,7 @@ TSharedPtr<FJsonObject> FAnimTrackEditor::AdjustTrack(
 
 	for (const FString& Path : AssetPaths)
 	{
-		TSharedPtr<FJsonObject> SingleResult = AdjustTrackSingle(Path, BoneFName, LocationOffset, RotationOffsetQuat, bSave);
+		TSharedPtr<FJsonObject> SingleResult = AdjustTrackSingle(Path, BoneFName, LocationOffset, RotationOffsetQuat, ScaleOverride, bHasScaleOverride, bSave);
 
 		bool bSuccess = false;
 		SingleResult->TryGetBoolField(TEXT("success"), bSuccess);
@@ -564,6 +575,118 @@ TSharedPtr<FJsonObject> FAnimTrackEditor::ReplaceSkeleton(
 	Result->SetNumberField(TEXT("fail_count"), FailCount);
 	Result->SetNumberField(TEXT("total"), AssetPaths.Num());
 	Result->SetArrayField(TEXT("results"), ResultsArray);
+	return Result;
+}
+
+// ===== Extract Range =====
+
+TSharedPtr<FJsonObject> FAnimTrackEditor::ExtractRange(
+	const FString& AssetPath,
+	int32 StartFrame,
+	int32 EndFrame,
+	const FString& DestPath,
+	const FString& NewName,
+	bool bSave)
+{
+	FString LoadError;
+	UAnimSequence* SourceAnim = LoadAnimSequence(AssetPath, LoadError);
+	if (!SourceAnim)
+	{
+		return ErrorResult(LoadError);
+	}
+
+	const IAnimationDataModel* DataModel = SourceAnim->GetDataModel();
+	if (!DataModel)
+	{
+		return ErrorResult(FString::Printf(TEXT("No data model: %s"), *AssetPath));
+	}
+
+	int32 TotalKeys = DataModel->GetNumberOfKeys();
+	if (TotalKeys <= 0)
+	{
+		return ErrorResult(FString::Printf(TEXT("Animation has 0 keys: %s"), *AssetPath));
+	}
+
+	if (EndFrame < 0)
+	{
+		EndFrame = TotalKeys - 1;
+	}
+
+	if (StartFrame < 0 || StartFrame >= TotalKeys)
+	{
+		return ErrorResult(FString::Printf(TEXT("start_frame %d out of range [0, %d]"), StartFrame, TotalKeys - 1));
+	}
+	if (EndFrame < StartFrame || EndFrame >= TotalKeys)
+	{
+		return ErrorResult(FString::Printf(TEXT("end_frame %d out of range [%d, %d]"), EndFrame, StartFrame, TotalKeys - 1));
+	}
+
+	FString ActualDestPath = DestPath;
+	if (ActualDestPath.IsEmpty())
+	{
+		ActualDestPath = FPackageName::GetLongPackagePath(AssetPath);
+	}
+
+	FString ActualNewName = NewName;
+	if (ActualNewName.IsEmpty())
+	{
+		ActualNewName = FString::Printf(TEXT("%s_F%d_%d"), *SourceAnim->GetName(), StartFrame, EndFrame);
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	UObject* DuplicatedObj = AssetTools.DuplicateAsset(ActualNewName, ActualDestPath, SourceAnim);
+	if (!DuplicatedObj)
+	{
+		return ErrorResult(FString::Printf(TEXT("DuplicateAsset failed: %s/%s"), *ActualDestPath, *ActualNewName));
+	}
+
+	UAnimSequence* NewAnim = Cast<UAnimSequence>(DuplicatedObj);
+	if (!NewAnim)
+	{
+		return ErrorResult(TEXT("Duplicated asset is not an AnimSequence"));
+	}
+
+	if (EndFrame < TotalKeys - 1)
+	{
+		bool bTrimmed = UE::Anim::AnimationData::Trim(NewAnim,
+			TRange<FFrameNumber>(FFrameNumber(EndFrame + 1), FFrameNumber(TotalKeys)));
+		if (!bTrimmed)
+		{
+			return ErrorResult(TEXT("Trim tail failed"));
+		}
+	}
+
+	if (StartFrame > 0)
+	{
+		bool bTrimmed = UE::Anim::AnimationData::Trim(NewAnim,
+			TRange<FFrameNumber>(FFrameNumber(0), FFrameNumber(StartFrame)));
+		if (!bTrimmed)
+		{
+			return ErrorResult(TEXT("Trim head failed"));
+		}
+	}
+
+	NewAnim->MarkPackageDirty();
+
+	FString NewAssetPath = FString::Printf(TEXT("%s/%s"), *ActualDestPath, *ActualNewName);
+	if (bSave)
+	{
+		UEditorAssetLibrary::SaveAsset(NewAssetPath, false);
+	}
+
+	FFrameRate FrameRate = DataModel->GetFrameRate();
+	int32 ExtractedFrameCount = EndFrame - StartFrame + 1;
+
+	TSharedPtr<FJsonObject> Result = SuccessResult(FString::Printf(
+		TEXT("Extracted frames %d-%d from %s -> %s (%d frames)"),
+		StartFrame, EndFrame, *SourceAnim->GetName(), *ActualNewName, ExtractedFrameCount));
+	Result->SetStringField(TEXT("source_path"), AssetPath);
+	Result->SetStringField(TEXT("new_asset_path"), NewAssetPath);
+	Result->SetNumberField(TEXT("source_total_frames"), TotalKeys);
+	Result->SetNumberField(TEXT("extracted_start_frame"), StartFrame);
+	Result->SetNumberField(TEXT("extracted_end_frame"), EndFrame);
+	Result->SetNumberField(TEXT("extracted_frame_count"), ExtractedFrameCount);
+	Result->SetStringField(TEXT("frame_rate"), FString::Printf(TEXT("%dfps"), FrameRate.Numerator / FMath::Max(1, FrameRate.Denominator)));
 	return Result;
 }
 

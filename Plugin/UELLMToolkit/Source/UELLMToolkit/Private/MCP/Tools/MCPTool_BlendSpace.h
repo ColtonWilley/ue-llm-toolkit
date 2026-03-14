@@ -37,8 +37,8 @@ public:
 			"- 'list': Find blend spaces in a content folder.\n"
 			"  Params: folder_path (required), recursive (optional, default false)\n\n"
 			"WRITE OPERATIONS:\n"
-			"- 'create': Create a new BlendSpace or BlendSpace1D.\n"
-			"  Params: package_path, name, skeleton_path (required); type (optional: 'BlendSpace1D' or 'BlendSpace', default 'BlendSpace1D')\n\n"
+			"- 'create': Create a new BlendSpace, BlendSpace1D, AimOffsetBlendSpace, or AimOffsetBlendSpace1D.\n"
+			"  Params: package_path, name, skeleton_path (required); type (optional: 'BlendSpace1D', 'BlendSpace', 'AimOffsetBlendSpace1D', 'AimOffsetBlendSpace', default 'BlendSpace1D')\n\n"
 			"- 'add_sample': Add animation at a position. Auto-expands axis range.\n"
 			"  Params: asset_path, animation_path (required); x, y, rate_scale (optional)\n\n"
 			"- 'remove_sample': Remove sample by index. Warning: uses RemoveAtSwap — indices shift.\n"
@@ -64,7 +64,7 @@ public:
 			FMCPToolParameter(TEXT("package_path"), TEXT("string"), TEXT("Package path for new asset (for create)")),
 			FMCPToolParameter(TEXT("name"), TEXT("string"), TEXT("Asset name (for create)")),
 			FMCPToolParameter(TEXT("skeleton_path"), TEXT("string"), TEXT("Skeleton asset path (for create)")),
-			FMCPToolParameter(TEXT("type"), TEXT("string"), TEXT("'BlendSpace1D' or 'BlendSpace' (for create)"), false, TEXT("BlendSpace1D")),
+			FMCPToolParameter(TEXT("type"), TEXT("string"), TEXT("'BlendSpace1D', 'BlendSpace', 'AimOffsetBlendSpace1D', or 'AimOffsetBlendSpace' (for create)"), false, TEXT("BlendSpace1D")),
 			FMCPToolParameter(TEXT("animation_path"), TEXT("string"), TEXT("Animation sequence path")),
 			FMCPToolParameter(TEXT("sample_index"), TEXT("number"), TEXT("Sample index")),
 			FMCPToolParameter(TEXT("x"), TEXT("number"), TEXT("X position"), false, TEXT("0")),

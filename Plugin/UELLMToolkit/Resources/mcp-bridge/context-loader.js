@@ -8,16 +8,12 @@
  * Context files are stored in ./contexts/*.md
  */
 
-import { readFileSync, readdirSync, existsSync } from "fs";
-import { join, dirname, basename } from "path";
+import { readFileSync, existsSync } from "fs";
+import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONTEXTS_DIR = join(__dirname, "contexts");
-const DOMAINS_DIR = join(__dirname, "..", "domains");
-
-// Project-specific domains directory — set via setProjectRoot()
-let projectDomainsDir = null;
 
 /**
  * Context configuration
@@ -221,114 +217,6 @@ const CONTEXT_CONFIG = {
       "bulk create",
     ],
   },
-
-  // Domain knowledge files (operational workflows, not API reference)
-  domain_code: {
-    files: ["code.md"],
-    toolPatterns: [],
-    keywords: [
-      "c++ patterns",
-      "cmc subclass",
-      "character movement component",
-      "build strategy",
-      "live coding",
-      "full rebuild",
-      "tobjectptr",
-      "struct layout",
-      "forward declare",
-      "module dependencies",
-      "createdefaultsubobject",
-    ],
-  },
-  domain_blueprints: {
-    files: ["blueprints.md"],
-    toolPatterns: [],
-    keywords: [
-      "node id",
-      "state-bound",
-      "state bound graph",
-      "animbp creation",
-      "create animbp",
-      "layout_graph",
-      "auto layout",
-      "cdo default",
-      "blend space binding",
-      "parameter_bindings",
-      "comparison_chain",
-      "transition duration",
-      "_c suffix",
-      "layer interface",
-    ],
-  },
-  domain_assets: {
-    files: ["assets.md"],
-    toolPatterns: [],
-    keywords: [
-      "fbx import",
-      "retarget",
-      "ik rig",
-      "skeleton chain",
-      "blender roundtrip",
-      "blender fbx",
-      "custom_sample_rate",
-      "frame rate",
-      "capture viewport",
-      "visual inspection",
-      "root motion",
-      "import_rotation",
-      "interchange pipeline",
-    ],
-  },
-  domain_debug: {
-    files: ["debug.md"],
-    toolPatterns: [],
-    keywords: [
-      "pie automation",
-      "run_sequence",
-      "input injection",
-      "input_tape",
-      "hold step",
-      "digital action",
-      "auto capture",
-      "output log cursor",
-      "since cursor",
-      "post-hoc log",
-      "monitor mode",
-      "pie status",
-      "delay_ms",
-    ],
-  },
-  domain_tooling: {
-    files: ["tooling.md"],
-    toolPatterns: [],
-    keywords: [
-      "plugin architecture",
-      "extension pattern",
-      "new tool",
-      "new operation",
-      "fmcptoolbase",
-      "tool registry",
-      "game thread dispatch",
-      "t3d export",
-      "capability map",
-      "property system",
-      "cdo vs placed",
-      "save after write",
-      "parameter validation",
-    ],
-  },
-  domain_meta: {
-    files: ["meta.md"],
-    toolPatterns: [],
-    keywords: [
-      "domain system",
-      "domain knowledge",
-      "module table",
-      "loading instructions",
-      "hard rules",
-      "project-specific knowledge",
-    ],
-  },
 };
 
 // Cache for loaded context files
@@ -336,29 +224,16 @@ const contextCache = new Map();
 
 /**
  * Load a context file from disk (with caching)
- * Checks: contexts/ → domains/ → projectDomains/
  */
 function loadContextFile(filename) {
   if (contextCache.has(filename)) {
     return contextCache.get(filename);
   }
 
-  // Resolve from contexts/ first, then domains/, then project domains
-  let filepath = join(CONTEXTS_DIR, filename);
+  const filepath = join(CONTEXTS_DIR, filename);
   if (!existsSync(filepath)) {
-    filepath = join(DOMAINS_DIR, filename);
-    if (!existsSync(filepath)) {
-      if (projectDomainsDir) {
-        filepath = join(projectDomainsDir, filename);
-        if (!existsSync(filepath)) {
-          console.error(`[ContextLoader] Context file not found: ${filename}`);
-          return null;
-        }
-      } else {
-        console.error(`[ContextLoader] Context file not found: ${filename}`);
-        return null;
-      }
-    }
+    console.error(`[ContextLoader] Context file not found: ${filepath}`);
+    return null;
   }
 
   try {
@@ -367,31 +242,6 @@ function loadContextFile(filename) {
     return content;
   } catch (error) {
     console.error(`[ContextLoader] Error loading ${filename}:`, error.message);
-    return null;
-  }
-}
-
-/**
- * Load a project domain file (from project domains directory only)
- * Uses a separate cache key prefix to avoid collisions with plugin files
- */
-function loadProjectDomainFile(filename) {
-  if (!projectDomainsDir) return null;
-
-  const cacheKey = `project:${filename}`;
-  if (contextCache.has(cacheKey)) {
-    return contextCache.get(cacheKey);
-  }
-
-  const filepath = join(projectDomainsDir, filename);
-  if (!existsSync(filepath)) return null;
-
-  try {
-    const content = readFileSync(filepath, "utf-8");
-    contextCache.set(cacheKey, content);
-    return content;
-  } catch (error) {
-    console.error(`[ContextLoader] Error loading project domain ${filename}:`, error.message);
     return null;
   }
 }
@@ -440,22 +290,12 @@ export function getCategoriesFromQuery(query) {
 
 /**
  * Load context content for a specific category
- * For domain_* categories, also loads matching project domain file if available.
  * @param {string} category - Category name (animation, blueprint, etc.)
  * @returns {string|null} - Combined context content or null
  */
 export function loadContextForCategory(category) {
   const config = CONTEXT_CONFIG[category];
   if (!config) {
-    // Check if it's a dynamically discovered project domain
-    if (projectDomainsDir) {
-      // Strip domain_ prefix: "domain_combat" -> "combat.md"
-      const filename = category.startsWith("domain_")
-        ? `${category.substring(7)}.md`
-        : `${category}.md`;
-      const projectContent = loadProjectDomainFile(filename);
-      if (projectContent) return projectContent;
-    }
     return null;
   }
 
@@ -464,15 +304,6 @@ export function loadContextForCategory(category) {
     const content = loadContextFile(file);
     if (content) {
       contents.push(content);
-    }
-  }
-
-  // For domain_* categories, also load matching project domain
-  if (category.startsWith("domain_") && projectDomainsDir) {
-    const domainName = category.substring(7); // "domain_code" -> "code"
-    const projectContent = loadProjectDomainFile(`${domainName}.md`);
-    if (projectContent) {
-      contents.push(projectContent);
     }
   }
 
@@ -519,32 +350,11 @@ export function getContextForQuery(query) {
 }
 
 /**
- * List all available context categories, including dynamically discovered project domains
+ * List all available context categories
  * @returns {string[]} - Array of category names
  */
 export function listCategories() {
-  const categories = Object.keys(CONTEXT_CONFIG);
-
-  // Discover project-only domain files not already in CONTEXT_CONFIG
-  if (projectDomainsDir && existsSync(projectDomainsDir)) {
-    try {
-      const files = readdirSync(projectDomainsDir);
-      for (const file of files) {
-        if (!file.endsWith(".md")) continue;
-        const name = basename(file, ".md");
-        const domainCategory = `domain_${name}`;
-        // Skip README, .prep-init config, and already-registered categories
-        if (name === "README" || name.startsWith(".")) continue;
-        if (!categories.includes(domainCategory)) {
-          categories.push(domainCategory);
-        }
-      }
-    } catch (error) {
-      console.error(`[ContextLoader] Error scanning project domains:`, error.message);
-    }
-  }
-
-  return categories;
+  return Object.keys(CONTEXT_CONFIG);
 }
 
 /**
@@ -567,33 +377,6 @@ export function getCategoryInfo(category) {
 }
 
 /**
- * Set the project root directory for project-specific domain loading.
- * Expects the directory containing the .uproject file.
- * Project domains are looked up in <projectRoot>/domains/
- * @param {string} projectRoot - Absolute path to project root
- */
-export function setProjectRoot(projectRoot) {
-  if (!projectRoot) return;
-
-  const domainsPath = join(projectRoot, "domains");
-  if (existsSync(domainsPath)) {
-    projectDomainsDir = domainsPath;
-    contextCache.clear(); // Clear cache so project domains are picked up
-    console.error(`[ContextLoader] Project domains loaded from: ${domainsPath}`);
-  } else {
-    console.error(`[ContextLoader] No project domains directory at: ${domainsPath}`);
-  }
-}
-
-/**
- * Get the current project domains directory (for diagnostics)
- * @returns {string|null}
- */
-export function getProjectDomainsDir() {
-  return projectDomainsDir;
-}
-
-/**
  * Clear the context cache (useful for hot-reloading)
  */
 export function clearCache() {
@@ -608,7 +391,5 @@ export default {
   getContextForQuery,
   listCategories,
   getCategoryInfo,
-  setProjectRoot,
-  getProjectDomainsDir,
   clearCache,
 };

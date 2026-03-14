@@ -77,6 +77,8 @@ public:
 				TEXT("Include function list in inspect result (default: false)"), false, TEXT("false")),
 			FMCPToolParameter(TEXT("include_graphs"), TEXT("boolean"),
 				TEXT("Include graph info in inspect result"), false, TEXT("false")),
+			FMCPToolParameter(TEXT("component_name"), TEXT("string"),
+				TEXT("For 'get_components': return only this component (by CDO name or SCS variable name)"), false),
 			FMCPToolParameter(TEXT("actor_label"), TEXT("string"),
 				TEXT("For 'get_collision': inspect a level actor instead of Blueprint CDO"), false),
 			FMCPToolParameter(TEXT("graph_name"), TEXT("string"),

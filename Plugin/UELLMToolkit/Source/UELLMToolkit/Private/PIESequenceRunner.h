@@ -83,7 +83,10 @@ public:
 		int32 InSettleMs,
 		const FString& InOutputDir,
 		const TMap<FString, TWeakObjectPtr<UInputAction>>& InPreLoadedActions,
-		int32 InAutoCapEveryNFrames = 0);
+		int32 InAutoCapEveryNFrames = 0,
+		int32 InMaxDurationMs = 0,
+		bool bInTakeRecord = false,
+		const FString& InTakeSlate = TEXT(""));
 
 	void Cancel();
 
@@ -116,6 +119,7 @@ private:
 	void StopAllTapes();
 	void OnSequenceComplete();
 	void OnSequenceFailed(const FString& Error);
+	void OnMaxDurationTimeout();
 	void WriteManifest();
 	void StopAllHolds();
 
@@ -178,7 +182,10 @@ private:
 	FTimerHandle StepTimerHandle;
 	FTimerHandle NormalCaptureHandle;
 	FTimerHandle CompletionCheckHandle;
+	FTimerHandle MaxDurationTimerHandle;
 	TArray<FTimerHandle> ScheduledStepHandles;
+
+	int32 MaxDurationMs = 0;
 
 	FDelegateHandle EndPIEDelegateHandle;
 
@@ -189,6 +196,10 @@ private:
 	int32 NormalCaptureCount = 0;
 	double StartTime = 0.0;
 	double EndTime = 0.0;
+
+	bool bTakeRecord = false;
+	FString TakeSlate;
+	FString TakeSequencePath;
 
 	UWorld* GetPIEWorld() const;
 	FTimerManager* GetPIETimerManager() const;

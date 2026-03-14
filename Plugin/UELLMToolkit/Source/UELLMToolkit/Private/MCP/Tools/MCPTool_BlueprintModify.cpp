@@ -34,6 +34,8 @@ namespace BlueprintModifyOps
 	static const FString SetPinValue = TEXT("set_pin_value");
 	static const FString SetComponentDefault = TEXT("set_component_default");
 	static const FString SetCDODefault = TEXT("set_cdo_default");
+	static const FString AddComponent = TEXT("add_component");
+	static const FString RemoveComponent = TEXT("remove_component");
 	static const FString AddDebugPrint = TEXT("add_debug_print");
 	static const FString RemoveDebugPrint = TEXT("remove_debug_print");
 	static const FString LayoutGraph = TEXT("layout_graph");
@@ -113,6 +115,14 @@ FMCPToolResult FMCPTool_BlueprintModify::Execute(const TSharedRef<FJsonObject>& 
 	{
 		return ExecuteSetCDODefault(Params);
 	}
+	if (Operation == BlueprintModifyOps::AddComponent)
+	{
+		return ExecuteAddComponent(Params);
+	}
+	if (Operation == BlueprintModifyOps::RemoveComponent)
+	{
+		return ExecuteRemoveComponent(Params);
+	}
 	// Level 6: Debug Operations
 	if (Operation == BlueprintModifyOps::AddDebugPrint)
 	{
@@ -138,7 +148,7 @@ FMCPToolResult FMCPTool_BlueprintModify::Execute(const TSharedRef<FJsonObject>& 
 	}
 
 	return FMCPToolResult::Error(FString::Printf(
-		TEXT("Unknown operation: '%s'. Valid: create, reparent, add_variable, remove_variable, add_function, remove_function, add_node, add_nodes, delete_node, connect_pins, disconnect_pins, set_pin_value, set_component_default, set_cdo_default, add_debug_print, remove_debug_print, layout_graph, compile, compile_all"),
+		TEXT("Unknown operation: '%s'. Valid: create, reparent, add_variable, remove_variable, add_function, remove_function, add_node, add_nodes, delete_node, connect_pins, disconnect_pins, set_pin_value, set_component_default, set_cdo_default, add_component, remove_component, add_debug_print, remove_debug_print, layout_graph, compile, compile_all"),
 		*Operation));
 }
 
@@ -1123,6 +1133,218 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetComponentDefault(const TShare
 	);
 }
 
+FMCPToolResult FMCPTool_BlueprintModify::ExecuteAddComponent(const TSharedRef<FJsonObject>& Params)
+{
+	TOptional<FMCPToolResult> Error;
+
+	FString ComponentClassName;
+	if (!ExtractRequiredString(Params, TEXT("component_class"), ComponentClassName, Error))
+	{
+		return Error.GetValue();
+	}
+
+	FString ComponentName;
+	if (!ExtractRequiredString(Params, TEXT("component_name"), ComponentName, Error))
+	{
+		return Error.GetValue();
+	}
+
+	FString AttachTo = ExtractOptionalString(Params, TEXT("attach_to"));
+
+	FMCPBlueprintLoadContext Context;
+	if (auto LoadError = Context.LoadAndValidate(Params))
+	{
+		return LoadError.GetValue();
+	}
+
+	USimpleConstructionScript* SCS = Context.Blueprint->SimpleConstructionScript;
+	if (!SCS)
+	{
+		return FMCPToolResult::Error(TEXT("Blueprint has no SimpleConstructionScript (not an Actor-based BP?)"));
+	}
+
+	UClass* CompClass = FindFirstObject<UClass>(*ComponentClassName, EFindFirstObjectOptions::NativeFirst);
+	if (!CompClass)
+	{
+		CompClass = LoadObject<UClass>(nullptr, *ComponentClassName);
+	}
+	if (!CompClass)
+	{
+		FString FullPath = FString::Printf(TEXT("/Script/Engine.%s"), *ComponentClassName);
+		CompClass = LoadObject<UClass>(nullptr, *FullPath);
+	}
+	if (!CompClass)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("Component class '%s' not found"), *ComponentClassName));
+	}
+
+	if (!CompClass->IsChildOf(UActorComponent::StaticClass()))
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("'%s' is not an ActorComponent class"), *ComponentClassName));
+	}
+
+	USCS_Node* NewNode = SCS->CreateNode(CompClass, FName(*ComponentName));
+	if (!NewNode)
+	{
+		return FMCPToolResult::Error(TEXT("Failed to create SCS node"));
+	}
+
+	bool bAttached = false;
+	if (!AttachTo.IsEmpty())
+	{
+		USCS_Node* ParentSCSNode = nullptr;
+		for (USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (Node && Node->GetVariableName().ToString() == AttachTo)
+			{
+				ParentSCSNode = Node;
+				break;
+			}
+		}
+
+		if (ParentSCSNode)
+		{
+			ParentSCSNode->AddChildNode(NewNode);
+			bAttached = true;
+		}
+		else
+		{
+			// attach_to names a native C++ component (not found in SCS)
+			NewNode->ParentComponentOrVariableName = FName(*AttachTo);
+			NewNode->bIsParentComponentNative = true;
+			if (Context.Blueprint->ParentClass)
+			{
+				NewNode->ParentComponentOwnerClassName = Context.Blueprint->ParentClass->GetFName();
+			}
+			SCS->AddNode(NewNode);
+			bAttached = true;
+		}
+	}
+
+	if (!bAttached)
+	{
+		SCS->AddNode(NewNode);
+	}
+
+	// Optional socket attachment (for attaching to a bone on the parent mesh)
+	FString SocketName = ExtractOptionalString(Params, TEXT("socket_name"));
+	if (!SocketName.IsEmpty())
+	{
+		NewNode->AttachToName = FName(*SocketName);
+	}
+
+	if (auto CompileError = Context.CompileAndFinalize(TEXT("add_component")))
+	{
+		return CompileError.GetValue();
+	}
+
+	TSharedPtr<FJsonObject> ResultData = Context.BuildResultJson();
+	ResultData->SetStringField(TEXT("component_name"), NewNode->GetVariableName().ToString());
+	ResultData->SetStringField(TEXT("component_class"), CompClass->GetName());
+	if (!AttachTo.IsEmpty())
+	{
+		ResultData->SetStringField(TEXT("attached_to"), AttachTo);
+	}
+	if (!SocketName.IsEmpty())
+	{
+		ResultData->SetStringField(TEXT("socket_name"), SocketName);
+	}
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Added component '%s' (%s) to Blueprint '%s'"),
+			*NewNode->GetVariableName().ToString(), *CompClass->GetName(), *Context.BlueprintPath),
+		ResultData
+	);
+}
+
+FMCPToolResult FMCPTool_BlueprintModify::ExecuteRemoveComponent(const TSharedRef<FJsonObject>& Params)
+{
+	TOptional<FMCPToolResult> Error;
+
+	FString ComponentName;
+	if (!ExtractRequiredString(Params, TEXT("component_name"), ComponentName, Error))
+	{
+		return Error.GetValue();
+	}
+
+	bool bPromoteChildren = ExtractOptionalBool(Params, TEXT("promote_children"), false);
+
+	FMCPBlueprintLoadContext Context;
+	if (auto LoadError = Context.LoadAndValidate(Params))
+	{
+		return LoadError.GetValue();
+	}
+
+	USimpleConstructionScript* SCS = Context.Blueprint->SimpleConstructionScript;
+	if (!SCS)
+	{
+		return FMCPToolResult::Error(TEXT("Blueprint has no SimpleConstructionScript (not an Actor-based BP?)"));
+	}
+
+	USCS_Node* TargetNode = nullptr;
+	for (USCS_Node* Node : SCS->GetAllNodes())
+	{
+		if (Node && Node->GetVariableName().ToString() == ComponentName)
+		{
+			TargetNode = Node;
+			break;
+		}
+	}
+
+	if (!TargetNode)
+	{
+		TArray<FString> Names;
+		for (USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (Node)
+			{
+				Names.Add(Node->GetVariableName().ToString());
+			}
+		}
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("SCS component '%s' not found. Available SCS components: %s"),
+			*ComponentName, *FString::Join(Names, TEXT(", "))));
+	}
+
+	FString RemovedClass = TargetNode->ComponentTemplate
+		? TargetNode->ComponentTemplate->GetClass()->GetName()
+		: TEXT("Unknown");
+	int32 ChildCount = TargetNode->ChildNodes.Num();
+
+	if (bPromoteChildren)
+	{
+		SCS->RemoveNodeAndPromoteChildren(TargetNode);
+	}
+	else
+	{
+		SCS->RemoveNode(TargetNode);
+	}
+
+	Context.Blueprint->Modify();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Context.Blueprint);
+
+	if (auto CompileError = Context.CompileAndFinalize(TEXT("remove_component")))
+	{
+		return CompileError.GetValue();
+	}
+
+	TSharedPtr<FJsonObject> ResultData = Context.BuildResultJson();
+	ResultData->SetStringField(TEXT("removed_component"), ComponentName);
+	ResultData->SetStringField(TEXT("removed_class"), RemovedClass);
+	if (bPromoteChildren && ChildCount > 0)
+	{
+		ResultData->SetNumberField(TEXT("promoted_children"), ChildCount);
+	}
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Removed component '%s' (%s) from Blueprint '%s'"),
+			*ComponentName, *RemovedClass, *Context.BlueprintPath),
+		ResultData
+	);
+}
+
 FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetCDODefault(const TSharedRef<FJsonObject>& Params)
 {
 	TOptional<FMCPToolResult> Error;
@@ -1177,6 +1399,21 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetCDODefault(const TSharedRef<F
 	);
 }
 
+static FString ResolvePropertyAlias(const FString& Name)
+{
+	static const TMap<FString, FString> Aliases = {
+		{ TEXT("SkeletalMeshAsset"), TEXT("SkinnedAsset") },
+		{ TEXT("SkeletalMesh"),      TEXT("SkinnedAsset") },
+		{ TEXT("skeletal_mesh"),     TEXT("SkinnedAsset") },
+	};
+
+	if (const FString* Resolved = Aliases.Find(Name))
+	{
+		return *Resolved;
+	}
+	return Name;
+}
+
 bool FMCPTool_BlueprintModify::SetComponentPropertyFromJson(UObject* Template, const FString& PropertyPath, const TSharedPtr<FJsonValue>& Value, FString& OutError)
 {
 	if (!Template || !Value.IsValid())
@@ -1185,9 +1422,13 @@ bool FMCPTool_BlueprintModify::SetComponentPropertyFromJson(UObject* Template, c
 		return false;
 	}
 
-	// Parse dot-separated property path
+	// Parse dot-separated property path, resolving aliases on each segment
 	TArray<FString> PathParts;
 	PropertyPath.ParseIntoArray(PathParts, TEXT("."), true);
+	for (FString& Part : PathParts)
+	{
+		Part = ResolvePropertyAlias(Part);
+	}
 
 	if (PathParts.Num() == 0)
 	{

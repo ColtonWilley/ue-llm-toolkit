@@ -4,11 +4,15 @@
 
 #include "Animation/BlendSpace.h"
 #include "Animation/BlendSpace1D.h"
+#include "Animation/AimOffsetBlendSpace.h"
+#include "Animation/AimOffsetBlendSpace1D.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
 #include "EditorAssetLibrary.h"
 #include "Factories/BlendSpaceFactoryNew.h"
 #include "Factories/BlendSpaceFactory1D.h"
+#include "Factories/AimOffsetBlendSpaceFactoryNew.h"
+#include "Factories/AimOffsetBlendSpaceFactory1D.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 
@@ -77,7 +81,7 @@ UAnimSequence* FBlendSpaceEditor::LoadAnimSequence(const FString& Path, FString&
 // ============================================================================
 
 TSharedPtr<FJsonObject> FBlendSpaceEditor::CreateBlendSpace(const FString& PackagePath, const FString& Name,
-	const FString& SkeletonPath, bool bIs1D)
+	const FString& SkeletonPath, bool bIs1D, bool bIsAimOffset)
 {
 	// Load skeleton
 	UObject* SkelObj = StaticLoadObject(USkeleton::StaticClass(), nullptr, *SkeletonPath);
@@ -91,21 +95,39 @@ TSharedPtr<FJsonObject> FBlendSpaceEditor::CreateBlendSpace(const FString& Packa
 		return ErrorResult(FString::Printf(TEXT("Asset is not a Skeleton: %s"), *SkeletonPath));
 	}
 
-	// Create via factory
+	// Create via factory — 4-way: BlendSpace1D, BlendSpace, AimOffsetBlendSpace1D, AimOffsetBlendSpace
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 	UFactory* Factory = nullptr;
 
-	if (bIs1D)
+	if (bIsAimOffset)
 	{
-		UBlendSpaceFactory1D* BS1DFactory = NewObject<UBlendSpaceFactory1D>();
-		BS1DFactory->TargetSkeleton = Skeleton;
-		Factory = BS1DFactory;
+		if (bIs1D)
+		{
+			auto* F = NewObject<UAimOffsetBlendSpaceFactory1D>();
+			F->TargetSkeleton = Skeleton;
+			Factory = F;
+		}
+		else
+		{
+			auto* F = NewObject<UAimOffsetBlendSpaceFactoryNew>();
+			F->TargetSkeleton = Skeleton;
+			Factory = F;
+		}
 	}
 	else
 	{
-		UBlendSpaceFactoryNew* BS2DFactory = NewObject<UBlendSpaceFactoryNew>();
-		BS2DFactory->TargetSkeleton = Skeleton;
-		Factory = BS2DFactory;
+		if (bIs1D)
+		{
+			auto* F = NewObject<UBlendSpaceFactory1D>();
+			F->TargetSkeleton = Skeleton;
+			Factory = F;
+		}
+		else
+		{
+			auto* F = NewObject<UBlendSpaceFactoryNew>();
+			F->TargetSkeleton = Skeleton;
+			Factory = F;
+		}
 	}
 
 	UObject* NewAsset = AssetTools.CreateAsset(Name, PackagePath, nullptr, Factory);
@@ -116,10 +138,14 @@ TSharedPtr<FJsonObject> FBlendSpaceEditor::CreateBlendSpace(const FString& Packa
 
 	NewAsset->MarkPackageDirty();
 
+	const TCHAR* TypeName =
+		bIsAimOffset ? (bIs1D ? TEXT("AimOffsetBlendSpace1D") : TEXT("AimOffsetBlendSpace"))
+		             : (bIs1D ? TEXT("BlendSpace1D") : TEXT("BlendSpace"));
+
 	TSharedPtr<FJsonObject> Result = SuccessResult(
-		FString::Printf(TEXT("Created %s: %s"), bIs1D ? TEXT("BlendSpace1D") : TEXT("BlendSpace"), *NewAsset->GetPathName()));
+		FString::Printf(TEXT("Created %s: %s"), TypeName, *NewAsset->GetPathName()));
 	Result->SetStringField(TEXT("path"), NewAsset->GetPathName());
-	Result->SetStringField(TEXT("type"), bIs1D ? TEXT("BlendSpace1D") : TEXT("BlendSpace"));
+	Result->SetStringField(TEXT("type"), TypeName);
 	return Result;
 }
 

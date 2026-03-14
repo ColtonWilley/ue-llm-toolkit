@@ -8,7 +8,7 @@ Copy this file to `CLAUDE.md` in the same directory and customize the build path
 
 ## Project Overview
 
-**UE LLM Toolkit** is an Unreal Engine 5.7 plugin that provides an HTTP REST API for LLM-driven editor automation — 37 tools, 200+ operations for Blueprint editing, animation, materials, level management, and more.
+**UE LLM Toolkit** is an Unreal Engine 5.7 plugin that provides an HTTP REST API for LLM-driven editor automation — 38 tools, 201 operations for Blueprint editing, animation, materials, level management, and more.
 
 ### Key Directories
 - `Source/UELLMToolkit/Private/MCP/` - HTTP server and tool implementations

@@ -30,6 +30,12 @@ public:
 	static TSharedPtr<FJsonObject> SerializeComponentTree(UBlueprint* Blueprint);
 
 	/**
+	 * Serialize a single component by name from a Blueprint CDO.
+	 * Returns JSON with component details, or an "error" field if not found.
+	 */
+	static TSharedPtr<FJsonObject> SerializeSingleComponent(UBlueprint* Blueprint, const FString& ComponentName);
+
+	/**
 	 * Serialize collision settings for all primitive components on a Blueprint CDO.
 	 * Returns JSON with: source, source_name, primitive_component_count, components[]
 	 */
@@ -65,6 +71,25 @@ private:
 	 * Returns only interesting non-default property values.
 	 */
 	static TSharedPtr<FJsonObject> GetComponentProperties(UActorComponent* Component);
+
+	/**
+	 * Serialize an SCS node and its children for the unified component tree.
+	 * Same output format as SerializeSceneComponentNode (name, class, origin, properties, children).
+	 * Skips nodes already present in CDO to avoid duplicates.
+	 */
+	static TSharedPtr<FJsonObject> SerializeSCSNodeForTree(
+		USCS_Node* Node,
+		const TSet<FName>& CDOComponentNames,
+		int32& OutInjectedCount);
+
+	/**
+	 * Recursively find a node by name in a JSON component tree and inject a child.
+	 * Returns true if the parent was found and child was injected.
+	 */
+	static bool InjectIntoJsonTree(
+		TArray<TSharedPtr<FJsonValue>>& Tree,
+		const FString& ParentName,
+		TSharedPtr<FJsonObject> NodeToInject);
 
 	/**
 	 * Serialize collision settings for a single primitive component.

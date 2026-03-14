@@ -33,10 +33,12 @@ public:
 			"- 'remove_slot': Remove slot track by index\n\n"
 			"Notify Operations:\n"
 			"- 'add_notify': Add instant anim notify\n"
-			"- 'add_notify_state': Add duration-based notify state\n"
+			"- 'add_notify_state': Add duration-based notify state (optional 'properties' to configure on creation)\n"
 			"- 'remove_notify': Remove notify by name\n"
 			"- 'move_notify': Move notify to a different track by index\n"
-			"- 'rename_track': Set display name for a notify track\n\n"
+			"- 'rename_track': Set display name for a notify track\n"
+			"- 'cleanup_tracks': Remove empty notify tracks beyond the last used track index\n"
+			"- 'set_notify_properties': Set properties on an existing notify by index (supports bool, number, string, FName, enum, instanced UObject via _class)\n\n"
 			"Blend Settings:\n"
 			"- 'set_blend_in': Set blend-in time and curve\n"
 			"- 'set_blend_out': Set blend-out time and curve\n\n"
@@ -48,7 +50,7 @@ public:
 		);
 		Info.Parameters = {
 			FMCPToolParameter(TEXT("montage_path"), TEXT("string"), TEXT("Path to montage asset (e.g., '/Game/Animations/AM_Attack')"), true),
-			FMCPToolParameter(TEXT("operation"), TEXT("string"), TEXT("Operation: get_info, create, save, add_section, remove_section, link_sections, add_segment, remove_segment, set_segment, add_slot, remove_slot, add_notify, add_notify_state, remove_notify, move_notify, rename_track, set_blend_in, set_blend_out, get_curves, add_curve, remove_curve, set_curve_keys"), true),
+			FMCPToolParameter(TEXT("operation"), TEXT("string"), TEXT("Operation: get_info, create, save, add_section, remove_section, link_sections, add_segment, remove_segment, set_segment, add_slot, remove_slot, add_notify, add_notify_state, remove_notify, move_notify, rename_track, cleanup_tracks, set_notify_properties, set_blend_in, set_blend_out, get_curves, add_curve, remove_curve, set_curve_keys"), true),
 			FMCPToolParameter(TEXT("skeleton_path"), TEXT("string"), TEXT("Skeleton path (for create)")),
 			FMCPToolParameter(TEXT("package_path"), TEXT("string"), TEXT("Package path (for create, e.g., '/Game/Animations')")),
 			FMCPToolParameter(TEXT("montage_name"), TEXT("string"), TEXT("Name for new montage (for create)")),
@@ -64,7 +66,8 @@ public:
 			FMCPToolParameter(TEXT("notify_class"), TEXT("string"), TEXT("Notify class name or path (e.g., 'AnimNotify_PlaySound' or '/Script/Engine.AnimNotify_PlaySound'). Omit for untyped notify.")),
 			FMCPToolParameter(TEXT("trigger_time"), TEXT("number"), TEXT("Notify trigger time in seconds")),
 			FMCPToolParameter(TEXT("track_index"), TEXT("number"), TEXT("Notify track index"), false, TEXT("0")),
-			FMCPToolParameter(TEXT("notify_index"), TEXT("number"), TEXT("Notify array index (from get_info) for move_notify")),
+			FMCPToolParameter(TEXT("notify_index"), TEXT("number"), TEXT("Notify array index (from get_info) for move_notify or set_notify_properties")),
+			FMCPToolParameter(TEXT("properties"), TEXT("object"), TEXT("Properties to set on notify UObject. Keys are property names, values are bool/number/string. For instanced sub-objects, use {\"_class\": \"/Script/Module.ClassName\", ...} with nested properties.")),
 			FMCPToolParameter(TEXT("track_name"), TEXT("string"), TEXT("Display name for notify track (for rename_track)")),
 			FMCPToolParameter(TEXT("blend_time"), TEXT("number"), TEXT("Blend time in seconds")),
 			FMCPToolParameter(TEXT("blend_option"), TEXT("string"), TEXT("Blend curve: Linear, Cubic, HermiteCubic, Sinusoidal, QuadraticInOut, CubicInOut, QuarticInOut, QuinticInOut, CircularIn, CircularOut, CircularInOut, ExpIn, ExpOut, ExpInOut"), false, TEXT("Linear")),
@@ -98,6 +101,8 @@ private:
 	FMCPToolResult HandleRemoveNotify(const FString& MontagePath, const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleMoveNotify(const FString& MontagePath, const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleRenameTrack(const FString& MontagePath, const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult HandleCleanupTracks(const FString& MontagePath);
+	FMCPToolResult HandleSetNotifyProperties(const FString& MontagePath, const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleSetBlendIn(const FString& MontagePath, const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleSetBlendOut(const FString& MontagePath, const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleGetCurves(const FString& MontagePath);

@@ -633,11 +633,30 @@ TSharedPtr<FJsonObject> FRetargetEditor::CopyBoneTracks(const FString& SourceAni
 
 		for (int32 KeyIdx = 0; KeyIdx < TargetNumKeys; ++KeyIdx)
 		{
-			int32 SourceKeyIdx = FMath::Min(KeyIdx, SourceNumKeys - 1);
-			FTransform T = SourceModel->GetBoneTrackTransform(BoneFName, FFrameNumber(SourceKeyIdx));
-			Positions.Add(T.GetLocation());
-			Rotations.Add(T.GetRotation());
-			Scales.Add(T.GetScale3D());
+			float Alpha = (TargetNumKeys > 1) ? (float)KeyIdx / (float)(TargetNumKeys - 1) : 0.f;
+			float SourceFloat = Alpha * (float)(SourceNumKeys - 1);
+			int32 SourceKeyA = FMath::FloorToInt32(SourceFloat);
+			int32 SourceKeyB = FMath::Min(SourceKeyA + 1, SourceNumKeys - 1);
+			float Frac = SourceFloat - (float)SourceKeyA;
+
+			FTransform TA = SourceModel->GetBoneTrackTransform(BoneFName, FFrameNumber(SourceKeyA));
+			if (Frac < KINDA_SMALL_NUMBER)
+			{
+				Positions.Add(TA.GetLocation());
+				Rotations.Add(TA.GetRotation());
+				Scales.Add(TA.GetScale3D());
+			}
+			else
+			{
+				FTransform TB = SourceModel->GetBoneTrackTransform(BoneFName, FFrameNumber(SourceKeyB));
+				FTransform Blended;
+				Blended.SetLocation(FMath::Lerp(TA.GetLocation(), TB.GetLocation(), Frac));
+				Blended.SetRotation(FQuat::Slerp(TA.GetRotation(), TB.GetRotation(), Frac));
+				Blended.SetScale3D(FMath::Lerp(TA.GetScale3D(), TB.GetScale3D(), Frac));
+				Positions.Add(Blended.GetLocation());
+				Rotations.Add(Blended.GetRotation());
+				Scales.Add(Blended.GetScale3D());
+			}
 		}
 
 		TargetController.SetBoneTrackKeys(BoneFName, Positions, Rotations, Scales, false);
@@ -655,6 +674,8 @@ TSharedPtr<FJsonObject> FRetargetEditor::CopyBoneTracks(const FString& SourceAni
 		CopiedCount, *SourceAnim->GetName(), *TargetAnim->GetName(),
 		*FString::Join(CopiedNames, TEXT(", "))));
 	Result->SetNumberField(TEXT("copied_count"), CopiedCount);
+	Result->SetNumberField(TEXT("source_keys"), SourceNumKeys);
+	Result->SetNumberField(TEXT("target_keys"), TargetNumKeys);
 	Result->SetNumberField(TEXT("target_total_tracks"), TargetModel->GetNumBoneTracks());
 	return Result;
 }
@@ -968,8 +989,8 @@ TSharedPtr<FJsonObject> FRetargetEditor::InspectRetargeter(const FString& Retarg
 						case EFKChainRotationMode::OneToOneReversed: FKJson->SetStringField(TEXT("rotation"), TEXT("OneToOneReversed")); break;
 						case EFKChainRotationMode::MatchChain: FKJson->SetStringField(TEXT("rotation"), TEXT("MatchChain")); break;
 						case EFKChainRotationMode::MatchScaledChain: FKJson->SetStringField(TEXT("rotation"), TEXT("MatchScaledChain")); break;
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7  // Don't need an elseif because case EFKChainRotationMode::CopyLocal will just never appear in ENGINE_VERSION < 5.7
-						case EFKChainRotationMode::CopyLocal: FKJson->SetStringField(TEXT("rotation"), TEXT("CopyLocal")); break;  // CopyLocal is not part of enum ENGINE_VERSION < 5.7
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
+						case EFKChainRotationMode::CopyLocal: FKJson->SetStringField(TEXT("rotation"), TEXT("CopyLocal")); break;
 #endif
 						default: FKJson->SetStringField(TEXT("rotation"), TEXT("Other")); break;
 						}
@@ -982,9 +1003,9 @@ TSharedPtr<FJsonObject> FRetargetEditor::InspectRetargeter(const FString& Retarg
 					OpJson->SetArrayField(TEXT("fk_chains"), FKArray);
 
 					// Chain mapping
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7  // UE5.7 version
-					const FRetargetChainMapping& Mapping = FKSettings->ChainMapping;  
-#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 6  // Need to get ChainMapping from the retargeter function GetChainMapping() instead
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
+					const FRetargetChainMapping& Mapping = FKSettings->ChainMapping;
+#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 6
 					const FRetargetChainMapping& Mapping = Retargeter->GetChainMapping();
 #endif
 					const TArray<FRetargetChainPair>& Pairs = Mapping.GetChainPairs();
@@ -1055,7 +1076,7 @@ TSharedPtr<FJsonObject> FRetargetEditor::CreateRetargeter(const FString& Package
 		UIKRetargeter::StaticClass(), Package, FName(*Name),
 		RF_Public | RF_Standalone, nullptr, GWarn);
 
-	UIKRetargeter* Retargeter = Cast<UIKRetargeter>(NewObj);  // Can get ChainMappings here in UE5.6
+	UIKRetargeter* Retargeter = Cast<UIKRetargeter>(NewObj);
 	if (!Retargeter)
 	{
 		return ErrorResult(TEXT("Factory failed to create IKRetargeter"));
@@ -1074,24 +1095,14 @@ TSharedPtr<FJsonObject> FRetargetEditor::CreateRetargeter(const FString& Package
 	// Add default ops, clean duplicates, assign, auto-map
 	Controller->AddDefaultOps();
 	RemoveDuplicateOps(Controller);
-	
-	// Per op IK assignment is a concept of 5.7 only (ops could reference different rigs).  In 5.6 AddDefaultOps calls OnAddedToStack and adds IK assignments
-	// via the ASSET. 
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
-	Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Source, SourceRig);  // AssignIKRigToAllOps not a member of UIKRetargeterController
-	Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, TargetRig);  // AssignIKRigToAllOps not a member of UIKRetargeterController
+	Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Source, SourceRig);
+	Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, TargetRig);
 #endif
 	Controller->AutoMapChains(EAutoMapChainType::Fuzzy, true);
 
 	// Pitfall #12: Auto-set Pelvis FK chain to GloballyScaled
 	// Find the FK Chains op and set the Pelvis chain translation mode
-	// Question: is ChainsToRetarget populated by FIKRetargetFKChainsOp::OnAddedToStack or AutoMapChains in UE5.6? This effects the pelvis fix loop FKSettings->ChainsToRetarget
-	/** Answer: 
-	 * OnAddedToStack: AddDefaultOps fills ChainsToRetarget, this is called inside OnAddedToStack
-	 * it is assumed that SetIKRig(Source/Target) must be called prior to AddDefaultOps because
-	 * AddDefaultOps requires IK to exist to work.  Since we initialize IK source/target
-	 * inside SetIKRig() -> we can safely later use AutoMapChains and Pelvis fix still works.
-	 * **/
 	int32 NumOps = Controller->GetNumRetargetOps();
 	for (int32 i = 0; i < NumOps; ++i)
 	{
@@ -1143,8 +1154,7 @@ TSharedPtr<FJsonObject> FRetargetEditor::SetupOps(const FString& RetargeterPath)
 	// Add defaults, clean dupes, assign, map (pitfalls #9, #10)
 	Controller->AddDefaultOps();
 	RemoveDuplicateOps(Controller);
-	// Per op IK assignment is a concept of 5.7 only (ops could reference different rigs).  In 5.6 AddDefaultOps calls OnAddedToStack and adds IK assignments
-	// via the ASSET. 
+
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 	if (SourceRig)
 	{
@@ -1251,8 +1261,8 @@ TSharedPtr<FJsonObject> FRetargetEditor::ConfigureFK(const FString& RetargeterPa
 			else if (RotMode == TEXT("onetoonereversed")) Setting.RotationMode = EFKChainRotationMode::OneToOneReversed;
 			else if (RotMode == TEXT("matchchain")) Setting.RotationMode = EFKChainRotationMode::MatchChain;
 			else if (RotMode == TEXT("matchscaledchain")) Setting.RotationMode = EFKChainRotationMode::MatchScaledChain;
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7  // Don't need an elseif because case EFKChainRotationMode::CopyLocal will just never appear in ENGINE_VERSION < 5.7'
-			else if (RotMode == TEXT("copylocal")) Setting.RotationMode = EFKChainRotationMode::CopyLocal;
+	#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
+		else if (RotMode == TEXT("copylocal")) Setting.RotationMode = EFKChainRotationMode::CopyLocal;
 #endif
 		}
 
@@ -1474,7 +1484,7 @@ TSharedPtr<FJsonObject> FRetargetEditor::BatchRetarget(const FString& Retargeter
 		false,          // bIncludeReferencedAssets
 		true            // bOverwriteExistingFiles
 	);
-#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 6  // UE5.6 does not have bOverwriteExistingFiles parameter
+#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 6
 	TArray<FAssetData> NewAssets = UIKRetargetBatchOperation::DuplicateAndRetarget(
 		AssetsToRetarget,
 		SourceMesh,
@@ -1504,19 +1514,9 @@ TSharedPtr<FJsonObject> FRetargetEditor::BatchRetarget(const FString& Retargeter
 			if (NewAnim)
 			{
 				NewAnim->bEnableRootMotion = true;
-				NewAnim->bForceRootLock = false;
 				NewAnim->MarkPackageDirty();
 				AssetJson->SetBoolField(TEXT("root_motion_enabled"), true);
 				RootMotionCount++;
-			}
-		}
-		else
-		{
-			UAnimSequence* NewAnim = Cast<UAnimSequence>(NewAsset.GetAsset());
-			if (NewAnim)
-			{
-				NewAnim->bForceRootLock = true;
-				NewAnim->MarkPackageDirty();
 			}
 		}
 
@@ -1539,8 +1539,11 @@ TSharedPtr<FJsonObject> FRetargetEditor::SetRootMotion(const FString& AnimPath, 
 	UAnimSequence* Anim = LoadAnimSequence(AnimPath, LoadError);
 	if (!Anim) return ErrorResult(LoadError);
 
+	Anim->Modify();
 	Anim->bEnableRootMotion = bEnable;
 	Anim->bForceRootLock = !bEnable;
+	FPropertyChangedEvent Evt(nullptr);
+	Anim->PostEditChangeProperty(Evt);
 	Anim->MarkPackageDirty();
 
 	FString State = bEnable ? TEXT("enabled") : TEXT("disabled");
@@ -1603,7 +1606,9 @@ TSharedPtr<FJsonObject> FRetargetEditor::InspectAnim(const FString& AnimPath)
 	Result->SetStringField(TEXT("path"), Anim->GetPathName());
 	Result->SetNumberField(TEXT("length"), Anim->GetPlayLength());
 	Result->SetNumberField(TEXT("num_frames"), Anim->GetNumberOfSampledKeys());
+	Result->SetNumberField(TEXT("rate_scale"), Anim->RateScale);
 	Result->SetBoolField(TEXT("root_motion"), Anim->bEnableRootMotion);
+	Result->SetBoolField(TEXT("force_root_lock"), Anim->bForceRootLock);
 
 	USkeleton* Skeleton = Anim->GetSkeleton();
 	if (Skeleton)

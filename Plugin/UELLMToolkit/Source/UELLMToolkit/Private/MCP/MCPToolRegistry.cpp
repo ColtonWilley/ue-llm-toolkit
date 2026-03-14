@@ -38,6 +38,7 @@
 #include "Tools/MCPTool_Widget.h"
 #include "Tools/MCPTool_AnimEdit.h"
 #include "Tools/MCPTool_GameplayDebug.h"
+#include "Tools/MCPTool_Sequencer.h"
 
 // Task queue tools
 #include "Tools/MCPTool_TaskSubmit.h"
@@ -140,6 +141,9 @@ void FMCPToolRegistry::RegisterBuiltinTools()
 
 	// Gameplay debug tools (PIE automation, input injection, capture)
 	RegisterTool(MakeShared<FMCPTool_GameplayDebug>());
+
+	// Sequencer / Take Recorder tools
+	RegisterTool(MakeShared<FMCPTool_Sequencer>());
 
 	// Create and register async task queue tools
 	// Task queue takes a raw pointer since the registry always outlives it

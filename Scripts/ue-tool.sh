@@ -89,6 +89,16 @@ check_python() {
     elif command -v python &> /dev/null 2>&1; then
         echo "python"
     else
+        # Windows: search common install locations when nothing is in PATH
+        for p in \
+            "/c/Users/$USER/AppData/Local/Programs/Python/Python3"*/python.exe \
+            "/c/Python3"*/python.exe \
+            "/c/Program Files/Python3"*/python.exe; do
+            if [[ -f "$p" ]] 2>/dev/null; then
+                echo "$p"
+                return
+            fi
+        done
         echo ""
     fi
 }

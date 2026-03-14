@@ -51,6 +51,10 @@ public:
 			"  Read results via get_output_log with filter '[PIE-DBG]'.\n"
 			"- 'stop_monitor': Stop monitoring, returns duration + event count.\n"
 			"- 'monitor_status': Check monitor state (active, duration, events, tracked actions).\n\n"
+			"Montage Control (during PIE):\n"
+			"- 'play_montage': Play an AnimMontage on a SkeletalMeshComponent's AnimInstance\n"
+			"- 'montage_jump_to_section': Jump to a named section in the active montage\n"
+			"- 'montage_stop': Stop the active montage with blend out\n\n"
 			"Legacy Sequences:\n"
 			"- 'execute_sequence': Play timed input sequence with auto-capture\n"
 			"- 'sequence_status': Poll running sequence progress\n\n"
@@ -94,6 +98,8 @@ public:
 				TEXT("Directory for captured frames (default: $TEMP/pie-debug/)"), false),
 			FMCPToolParameter(TEXT("name"), TEXT("string"),
 				TEXT("Name for the sequence run (used in output dir and manifest)"), false),
+			FMCPToolParameter(TEXT("max_duration_ms"), TEXT("number"),
+				TEXT("run_sequence: safety timeout in ms after settle completes. Force-fails sequence if exceeded. Default: 120000 (2 min). Set 0 to disable."), false),
 			FMCPToolParameter(TEXT("start_pie"), TEXT("boolean"),
 				TEXT("start_monitor: automatically start PIE if not already running (default: false)"), false),
 			FMCPToolParameter(TEXT("interval_ms"), TEXT("number"),
@@ -103,7 +109,23 @@ public:
 			FMCPToolParameter(TEXT("log_axes"), TEXT("boolean"),
 				TEXT("start_monitor: log axis values every tick (~60Hz) when active. Enables [PIE-DBG] AXIS lines for precise input replay. (default: false)"), false),
 			FMCPToolParameter(TEXT("values"), TEXT("array"),
-				TEXT("input_tape step: per-frame values array. Each entry: [x,y] for Axis2D, [x] or number for Axis1D. One value = one game frame at 60fps."), false)
+				TEXT("input_tape step: per-frame values array. Each entry: [x,y] for Axis2D, [x] or number for Axis1D. One value = one game frame at 60fps."), false),
+			FMCPToolParameter(TEXT("montage_path"), TEXT("string"),
+				TEXT("play_montage/montage_jump_to_section: path to UAnimMontage asset"), false),
+			FMCPToolParameter(TEXT("component_name"), TEXT("string"),
+				TEXT("play_montage/montage_stop/montage_jump_to_section: SkeletalMeshComponent name (empty = character mesh)"), false),
+			FMCPToolParameter(TEXT("play_rate"), TEXT("number"),
+				TEXT("play_montage: playback rate (default: 1.0)"), false),
+			FMCPToolParameter(TEXT("start_section"), TEXT("string"),
+				TEXT("play_montage: section to start at after playing"), false),
+			FMCPToolParameter(TEXT("section_name"), TEXT("string"),
+				TEXT("montage_jump_to_section: section name to jump to"), false),
+			FMCPToolParameter(TEXT("blend_out_time"), TEXT("number"),
+				TEXT("montage_stop: blend out duration in seconds (default: 0.25)"), false),
+			FMCPToolParameter(TEXT("take_record"), TEXT("boolean"),
+				TEXT("run_sequence: enable Take Recorder during PIE sequence (default: false)"), false),
+			FMCPToolParameter(TEXT("take_slate"), TEXT("string"),
+				TEXT("run_sequence: custom slate name for the take (only with take_record)"), false)
 		};
 		Info.Annotations = FMCPToolAnnotations::Modifying();
 		return Info;
@@ -157,6 +179,10 @@ private:
 		int32 EventsLogged = 0;
 		TArray<FMonitoredActionState> TrackedActions;
 	};
+
+	FMCPToolResult ExecutePlayMontage(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteMontageJumpToSection(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteMontageStop(const TSharedRef<FJsonObject>& Params);
 
 	FMCPToolResult ExecuteStartMonitor(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteStopMonitor(const TSharedRef<FJsonObject>& Params);

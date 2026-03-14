@@ -130,16 +130,6 @@ private:
 - Config files: `Config/`
 - Plugins: `Plugins/`
 
-## Domain Knowledge
-
-For operational workflows and UE 5.7 gotchas, see `Plugins/UELLMToolkit/Resources/domains/meta.md` — covers C++ patterns, Blueprint/AnimBP operations, asset pipeline, PIE debugging, and plugin extension.
-
-### Project-Specific Domains
-
-Tell your AI `prep one time init` to auto-generate project domain files that extend plugin domains with your project's class hierarchy, AnimBP inventory, skeleton paths, and input actions. Requires the editor running with the plugin loaded.
-
-Generated files go to `domains/` in your project root. The MCP bridge loads both plugin + project domains automatically.
-
 ## Response Guidelines
 
 When providing code:

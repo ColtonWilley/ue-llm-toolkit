@@ -14,6 +14,7 @@
 
 #include "AnimGraphEditor.h"
 #include "AnimGraphFinder.h"
+#include "PropertySerializer.h"
 #include "AnimNodePinUtils.h"
 #include "AnimTransitionConditionFactory.h"
 #include "AnimAssetNodeFactory.h"
@@ -1002,6 +1003,112 @@ TSharedPtr<FJsonObject> FAnimGraphEditor::GetAllTransitionNodes(
 	return Result;
 }
 
+bool FAnimGraphEditor::GetAnimNodeProperty(
+	UEdGraph* Graph,
+	const FString& NodeId,
+	const FString& PropertyName,
+	TSharedPtr<FJsonObject>& OutResult,
+	FString& OutError)
+{
+	if (!Graph)
+	{
+		OutError = TEXT("Invalid graph");
+		return false;
+	}
+
+	UEdGraphNode* Node = FindNodeById(Graph, NodeId);
+	if (!Node)
+	{
+		OutError = FString::Printf(TEXT("Node '%s' not found in graph '%s'"), *NodeId, *Graph->GetName());
+		return false;
+	}
+
+	UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+	if (!AnimNode)
+	{
+		OutError = FString::Printf(TEXT("Node '%s' is not an anim graph node (class: %s)"),
+			*NodeId, *Node->GetClass()->GetName());
+		return false;
+	}
+
+	FStructProperty* NodeStructProp = nullptr;
+	for (TFieldIterator<FStructProperty> It(AnimNode->GetClass()); It; ++It)
+	{
+		if (It->GetFName() == TEXT("Node") && It->Struct && It->Struct->IsChildOf(FAnimNode_Base::StaticStruct()))
+		{
+			NodeStructProp = *It;
+			break;
+		}
+	}
+
+	if (!NodeStructProp)
+	{
+		OutError = FString::Printf(TEXT("Node '%s' (class: %s) has no embedded FAnimNode struct"),
+			*NodeId, *AnimNode->GetClass()->GetName());
+		return false;
+	}
+
+	UScriptStruct* NodeStruct = NodeStructProp->Struct;
+	void* NodeStructData = NodeStructProp->ContainerPtrToValuePtr<void>(AnimNode);
+
+	OutResult = MakeShared<FJsonObject>();
+	OutResult->SetStringField(TEXT("node_id"), NodeId);
+	OutResult->SetStringField(TEXT("node_class"), AnimNode->GetClass()->GetName());
+	OutResult->SetStringField(TEXT("struct_type"), NodeStruct->GetName());
+
+	if (!PropertyName.IsEmpty())
+	{
+		FProperty* TargetProp = NodeStruct->FindPropertyByName(FName(*PropertyName));
+		if (!TargetProp)
+		{
+			TArray<FString> AvailableProps;
+			for (TFieldIterator<FProperty> PropIt(NodeStruct); PropIt; ++PropIt)
+			{
+				AvailableProps.Add(PropIt->GetName());
+			}
+			OutError = FString::Printf(TEXT("Property '%s' not found on %s. Available: %s"),
+				*PropertyName, *NodeStruct->GetName(), *FString::Join(AvailableProps, TEXT(", ")));
+			return false;
+		}
+
+		const void* PropData = TargetProp->ContainerPtrToValuePtr<void>(NodeStructData);
+		TSharedPtr<FJsonValue> JsonVal = FPropertySerializer::PropertyToJsonValue(TargetProp, PropData);
+
+		OutResult->SetStringField(TEXT("property_name"), PropertyName);
+		OutResult->SetField(TEXT("property_value"), JsonVal);
+		OutResult->SetStringField(TEXT("property_type"), TargetProp->GetCPPType());
+	}
+	else
+	{
+		TArray<TSharedPtr<FJsonValue>> PropsArray;
+		for (TFieldIterator<FProperty> PropIt(NodeStruct); PropIt; ++PropIt)
+		{
+			FProperty* Prop = *PropIt;
+			if (Prop->HasAnyPropertyFlags(CPF_Deprecated | CPF_Transient))
+			{
+				continue;
+			}
+			if (CastField<FDelegateProperty>(Prop) || CastField<FMulticastDelegateProperty>(Prop))
+			{
+				continue;
+			}
+
+			const void* PropData = Prop->ContainerPtrToValuePtr<void>(NodeStructData);
+			TSharedPtr<FJsonValue> JsonVal = FPropertySerializer::PropertyToJsonValue(Prop, PropData);
+
+			TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+			PropObj->SetStringField(TEXT("name"), Prop->GetName());
+			PropObj->SetField(TEXT("value"), JsonVal);
+			PropObj->SetStringField(TEXT("type"), Prop->GetCPPType());
+			PropsArray.Add(MakeShared<FJsonValueObject>(PropObj));
+		}
+		OutResult->SetArrayField(TEXT("properties"), PropsArray);
+		OutResult->SetNumberField(TEXT("property_count"), PropsArray.Num());
+	}
+
+	return true;
+}
+
 bool FAnimGraphEditor::SetAnimNodeProperty(
 	UEdGraph* Graph,
 	const FString& NodeId,
@@ -1070,6 +1177,33 @@ bool FAnimGraphEditor::SetAnimNodeProperty(
 		OutError = FString::Printf(TEXT("Failed to set '%s' to '%s' (type: %s)"),
 			*PropertyName, *Value, *TargetProp->GetCPPType());
 		return false;
+	}
+
+	// Sync pin default value if this property is exposed as a pin.
+	// Pin defaults take precedence over struct values at runtime.
+	for (UEdGraphPin* Pin : AnimNode->Pins)
+	{
+		if (Pin && Pin->Direction == EGPD_Input && Pin->PinName.ToString() == PropertyName)
+		{
+			// Use PropertyValueToString_Direct — canonical UE conversion that produces
+			// pin-compatible format (e.g. FRotator → "P,Y,R" not "(Pitch=P,Yaw=Y,Roll=R)")
+			FString PinValue;
+			FBlueprintEditorUtils::PropertyValueToString_Direct(
+				TargetProp, reinterpret_cast<const uint8*>(PropData), PinValue);
+
+			// SetPinDefaultValueAtConstruction bypasses validation (unlike TrySetDefaultValue
+			// which silently rejects format mismatches for struct pins)
+			const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
+			if (Schema)
+			{
+				Schema->SetPinDefaultValueAtConstruction(Pin, PinValue);
+			}
+			else
+			{
+				Pin->DefaultValue = PinValue;
+			}
+			break;
+		}
 	}
 
 	AnimNode->Modify();

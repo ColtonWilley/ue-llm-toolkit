@@ -1,11 +1,11 @@
 // Copyright Natali Caggiano. All Rights Reserved.
 
 #include "ControlRigEditor.h"
-# if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7  // UE5.7+ IMPLEMENTATION ONLY
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 #include "ControlRigBlueprintLegacy.h"
-# else
+#else
 #include "ControlRigBlueprint.h"
-# endif
+#endif
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMModel/Nodes/RigVMTemplateNode.h"

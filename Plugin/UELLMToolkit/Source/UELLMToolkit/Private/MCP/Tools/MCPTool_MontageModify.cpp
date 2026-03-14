@@ -105,6 +105,14 @@ FMCPToolResult FMCPTool_MontageModify::Execute(const TSharedRef<FJsonObject>& Pa
 	{
 		return HandleRenameTrack(MontagePath, Params);
 	}
+	else if (Operation == TEXT("cleanup_tracks"))
+	{
+		return HandleCleanupTracks(MontagePath);
+	}
+	else if (Operation == TEXT("set_notify_properties"))
+	{
+		return HandleSetNotifyProperties(MontagePath, Params);
+	}
 	else if (Operation == TEXT("set_blend_in"))
 	{
 		return HandleSetBlendIn(MontagePath, Params);
@@ -481,6 +489,16 @@ FMCPToolResult FMCPTool_MontageModify::HandleAddNotify(const FString& MontagePat
 		return FMCPToolResult::Error(OpError);
 	}
 
+	const TSharedPtr<FJsonObject>* PropsObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("properties"), PropsObj) && PropsObj && PropsObj->IsValid())
+	{
+		int32 NewNotifyIndex = Montage->Notifies.Num() - 1;
+		if (!FMontageEditor::SetNotifyProperties(Montage, NewNotifyIndex, *PropsObj, OpError))
+		{
+			return FMCPToolResult::Error(FString::Printf(TEXT("Notify added but property setting failed: %s"), *OpError));
+		}
+	}
+
 	TSharedPtr<FJsonObject> Result = FMontageEditor::SerializeMontageInfo(Montage);
 	return FMCPToolResult::Success(FString::Printf(TEXT("Added notify '%s' at %.3fs"), *NotifyName, TrigTime), Result);
 }
@@ -519,6 +537,16 @@ FMCPToolResult FMCPTool_MontageModify::HandleAddNotifyState(const FString& Monta
 	if (!FMontageEditor::AddNotifyState(Montage, NotifyName, static_cast<float>(StartTime), static_cast<float>(Duration), TrackIndex, NotifyClassPath, OpError))
 	{
 		return FMCPToolResult::Error(OpError);
+	}
+
+	const TSharedPtr<FJsonObject>* PropsObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("properties"), PropsObj) && PropsObj && PropsObj->IsValid())
+	{
+		int32 NewNotifyIndex = Montage->Notifies.Num() - 1;
+		if (!FMontageEditor::SetNotifyProperties(Montage, NewNotifyIndex, *PropsObj, OpError))
+		{
+			return FMCPToolResult::Error(FString::Printf(TEXT("Notify added but property setting failed: %s"), *OpError));
+		}
 	}
 
 	TSharedPtr<FJsonObject> Result = FMontageEditor::SerializeMontageInfo(Montage);
@@ -609,6 +637,50 @@ FMCPToolResult FMCPTool_MontageModify::HandleRenameTrack(const FString& MontageP
 
 	TSharedPtr<FJsonObject> Result = FMontageEditor::SerializeMontageInfo(Montage);
 	return FMCPToolResult::Success(FString::Printf(TEXT("Renamed track %d to '%s'"), static_cast<int32>(TrackIdx), *TrackName), Result);
+}
+
+FMCPToolResult FMCPTool_MontageModify::HandleCleanupTracks(const FString& MontagePath)
+{
+	UAnimMontage* Montage = nullptr;
+	if (auto Error = LoadMontageOrError(MontagePath, Montage))
+	{
+		return Error.GetValue();
+	}
+
+	int32 Removed = FMontageEditor::CleanupNotifyTracks(Montage);
+
+	TSharedPtr<FJsonObject> Result = FMontageEditor::SerializeMontageInfo(Montage);
+	return FMCPToolResult::Success(FString::Printf(TEXT("Removed %d empty notify tracks"), Removed), Result);
+}
+
+FMCPToolResult FMCPTool_MontageModify::HandleSetNotifyProperties(const FString& MontagePath, const TSharedRef<FJsonObject>& Params)
+{
+	UAnimMontage* Montage = nullptr;
+	if (auto Error = LoadMontageOrError(MontagePath, Montage))
+	{
+		return Error.GetValue();
+	}
+
+	double NotifyIdx;
+	if (!Params->TryGetNumberField(TEXT("notify_index"), NotifyIdx))
+	{
+		return FMCPToolResult::Error(TEXT("Missing required parameter: notify_index"));
+	}
+
+	const TSharedPtr<FJsonObject>* PropsObj = nullptr;
+	if (!Params->TryGetObjectField(TEXT("properties"), PropsObj) || !PropsObj || !PropsObj->IsValid())
+	{
+		return FMCPToolResult::Error(TEXT("Missing required parameter: properties"));
+	}
+
+	FString OpError;
+	if (!FMontageEditor::SetNotifyProperties(Montage, static_cast<int32>(NotifyIdx), *PropsObj, OpError))
+	{
+		return FMCPToolResult::Error(OpError);
+	}
+
+	TSharedPtr<FJsonObject> Result = FMontageEditor::SerializeMontageInfo(Montage);
+	return FMCPToolResult::Success(FString::Printf(TEXT("Set properties on notify %d"), static_cast<int32>(NotifyIdx)), Result);
 }
 
 FMCPToolResult FMCPTool_MontageModify::HandleSetBlendIn(const FString& MontagePath, const TSharedRef<FJsonObject>& Params)

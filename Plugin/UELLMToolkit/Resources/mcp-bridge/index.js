@@ -26,7 +26,6 @@ import {
   listCategories,
   getCategoryInfo,
   loadContextForCategory,
-  setProjectRoot,
 } from "./context-loader.js";
 
 // Extracted library functions
@@ -70,17 +69,10 @@ const server = new Server(
 
 // Cache for tools (refreshed on each list request)
 let cachedTools = [];
-let projectRootResolved = false;
 
 // Handle list_tools request
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const status = await checkUnrealConnection();
-
-  // Lazily resolve project root on first successful connection
-  if (status.connected && !projectRootResolved && status.projectDirectory) {
-    setProjectRoot(status.projectDirectory);
-    projectRootResolved = true;
-  }
 
   if (!status.connected) {
     log.info("Unreal not connected", { reason: status.reason });
@@ -365,17 +357,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-
-  // Try to resolve project root for project-specific domains
-  try {
-    const status = await checkUnrealConnection();
-    if (status.connected && status.projectDirectory) {
-      setProjectRoot(status.projectDirectory);
-      projectRootResolved = true;
-    }
-  } catch (error) {
-    log.debug("Could not resolve project root on startup", { error: error.message });
-  }
 
   const categories = listCategories();
   const testContext = loadContextForCategory("animation");

@@ -103,8 +103,9 @@ public:
 			"- 'connect_state_machine_to_output': Connect State Machine to AnimGraph Output Pose\n\n"
 			"Animation Assignment:\n"
 			"- 'set_state_animation': Assign AnimSequence, BlendSpace, BlendSpace1D, or Montage to state\n"
+			"- 'get_anim_node_property': Get internal FAnimNode struct property (single or all). Omit property_name to dump all properties (discovery mode)\n"
 			"- 'set_anim_node_property': Set internal FAnimNode struct property on an anim graph node (bLoopAnimation, PlayRate, StartPosition, etc.)\n"
-			"- 'add_anim_node': Create animation/slot/blending node in any graph (AnimGraph, layer, state bound). Types: sequence, blendspace, blendspace1d, slot, inertialization, dead_blending\n"
+			"- 'add_anim_node': Create animation/slot/blending node in any graph (AnimGraph, layer, state bound). Types: sequence, blendspace, blendspace1d, slot, inertialization, dead_blending, copy_pose_from_mesh, modify_bone, control_rig, layered_blend_per_bone, aim_offset\n"
 			"- 'delete_anim_node': Delete animation node from any graph by node ID\n"
 			"- 'find_animations': Search compatible animation assets\n\n"
 			"Animation Layer Interfaces:\n"
@@ -123,7 +124,7 @@ public:
 		);
 		Info.Parameters = {
 			FMCPToolParameter(TEXT("blueprint_path"), TEXT("string"), TEXT("Path to the Animation Blueprint (e.g., '/Game/Characters/ABP_Character')"), true),
-			FMCPToolParameter(TEXT("operation"), TEXT("string"), TEXT("Operation: get_info, get_state_machine, get_state_machine_diagram, create_state_machine, add_state, remove_state, set_entry_state, add_transition, remove_transition, set_transition_duration, set_transition_priority, add_condition_node, delete_condition_node, connect_condition_nodes, connect_to_result, connect_state_machine_to_output, set_state_animation, set_anim_node_property, add_anim_node, delete_anim_node, find_animations, batch, get_transition_nodes, inspect_node_pins, set_pin_default_value, add_comparison_chain, validate_blueprint, list_layer_interfaces, list_layers, list_linked_layer_nodes, add_layer_interface, add_linked_layer_node, set_layer_instance, connect_anim_nodes, bind_variable, inspect_layer_graph, layout_graph"), true),
+			FMCPToolParameter(TEXT("operation"), TEXT("string"), TEXT("Operation: get_info, get_state_machine, get_state_machine_diagram, create_state_machine, add_state, remove_state, set_entry_state, add_transition, remove_transition, set_transition_duration, set_transition_priority, add_condition_node, delete_condition_node, connect_condition_nodes, connect_to_result, connect_state_machine_to_output, set_state_animation, get_anim_node_property, set_anim_node_property, add_anim_node, delete_anim_node, find_animations, batch, get_transition_nodes, inspect_node_pins, set_pin_default_value, add_comparison_chain, validate_blueprint, list_layer_interfaces, list_layers, list_linked_layer_nodes, add_layer_interface, add_linked_layer_node, set_layer_instance, connect_anim_nodes, bind_variable, inspect_layer_graph, layout_graph"), true),
 			FMCPToolParameter(TEXT("state_machine"), TEXT("string"), TEXT("State machine name (for state/transition operations)"), false),
 			FMCPToolParameter(TEXT("state_name"), TEXT("string"), TEXT("State name (for state operations)"), false),
 			FMCPToolParameter(TEXT("from_state"), TEXT("string"), TEXT("Source state name (for transitions)"), false),
@@ -139,8 +140,22 @@ public:
 			FMCPToolParameter(TEXT("source_pin"), TEXT("string"), TEXT("Source pin name"), false),
 			FMCPToolParameter(TEXT("target_node_id"), TEXT("string"), TEXT("Target node ID for connection"), false),
 			FMCPToolParameter(TEXT("target_pin"), TEXT("string"), TEXT("Target pin name"), false),
-			FMCPToolParameter(TEXT("animation_type"), TEXT("string"), TEXT("Animation type: sequence, blendspace, blendspace1d, slot, inertialization, dead_blending"), false),
+			FMCPToolParameter(TEXT("animation_type"), TEXT("string"), TEXT("Animation type: sequence, blendspace, blendspace1d, slot, inertialization, dead_blending, copy_pose_from_mesh, modify_bone, two_bone_ik, control_rig, layered_blend_per_bone, aim_offset, local_to_component, component_to_local"), false),
+			FMCPToolParameter(TEXT("bone_name"), TEXT("string"), TEXT("Bone name for modify_bone, two_bone_ik, or layered_blend_per_bone (e.g., 'spine_01')"), false),
+			FMCPToolParameter(TEXT("effector_bone"), TEXT("string"), TEXT("Effector target bone for two_bone_ik (e.g., 'Bow_String')"), false),
+			FMCPToolParameter(TEXT("effector_space"), TEXT("string"), TEXT("Effector coordinate space for two_bone_ik: BoneSpace (default), ComponentSpace, WorldSpace, ParentBoneSpace"), false, TEXT("BoneSpace")),
+			FMCPToolParameter(TEXT("joint_target_bone"), TEXT("string"), TEXT("Joint (pole) target bone for two_bone_ik (e.g., 'lowerarm_r')"), false),
+			FMCPToolParameter(TEXT("allow_stretching"), TEXT("boolean"), TEXT("Allow bone stretching for two_bone_ik (default: false)"), false, TEXT("false")),
+			FMCPToolParameter(TEXT("blend_depth"), TEXT("number"), TEXT("Blend depth for layered_blend_per_bone (0 = all descendants, default: 0)"), false, TEXT("0")),
+			FMCPToolParameter(TEXT("mesh_space_rotation_blend"), TEXT("boolean"), TEXT("Use mesh-space rotation blending for layered_blend_per_bone (default: false)"), false, TEXT("false")),
+			FMCPToolParameter(TEXT("rotation"), TEXT("object"), TEXT("Rotation for modify_bone: {pitch, yaw, roll}"), false),
+			FMCPToolParameter(TEXT("translation"), TEXT("object"), TEXT("Translation for modify_bone: {x, y, z}"), false),
+			FMCPToolParameter(TEXT("rotation_mode"), TEXT("string"), TEXT("Rotation mode for modify_bone: additive (default), replace, ignore"), false, TEXT("additive")),
+			FMCPToolParameter(TEXT("translation_mode"), TEXT("string"), TEXT("Translation mode for modify_bone: additive (default), replace, ignore"), false, TEXT("additive")),
+			FMCPToolParameter(TEXT("rotation_space"), TEXT("string"), TEXT("Rotation space for modify_bone: bone (default), component, parent, world"), false, TEXT("bone")),
+			FMCPToolParameter(TEXT("translation_space"), TEXT("string"), TEXT("Translation space for modify_bone: bone (default), component, parent, world"), false, TEXT("bone")),
 			FMCPToolParameter(TEXT("animation_path"), TEXT("string"), TEXT("Path to animation asset"), false),
+			FMCPToolParameter(TEXT("control_rig_class"), TEXT("string"), TEXT("Control Rig Blueprint class path for control_rig type (e.g., '/Game/CR_MyRig.CR_MyRig_C')"), false),
 			FMCPToolParameter(TEXT("parameter_bindings"), TEXT("object"), TEXT("BlendSpace parameter bindings {\"X\": \"Speed\", \"Y\": \"Direction\"}"), false),
 			FMCPToolParameter(TEXT("search_pattern"), TEXT("string"), TEXT("Animation search pattern (for find_animations)"), false),
 			FMCPToolParameter(TEXT("asset_type"), TEXT("string"), TEXT("Asset type filter: AnimSequence, BlendSpace, BlendSpace1D, Montage, All"), false, TEXT("All")),
@@ -202,7 +217,8 @@ private:
 	FMCPToolResult HandleValidateBlueprint(const FString& BlueprintPath);
 	FMCPToolResult HandleGetStateMachineDiagram(const FString& BlueprintPath, const TSharedRef<FJsonObject>& Params);
 
-	// Anim node property setter
+	// Anim node property getter/setter
+	FMCPToolResult HandleGetAnimNodeProperty(const FString& BlueprintPath, const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleSetAnimNodeProperty(const FString& BlueprintPath, const TSharedRef<FJsonObject>& Params);
 
 	// Bulk operation handler

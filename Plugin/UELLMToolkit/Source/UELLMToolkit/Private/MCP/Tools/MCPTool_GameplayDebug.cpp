@@ -87,11 +87,14 @@ FMCPToolResult FMCPTool_GameplayDebug::Execute(const TSharedRef<FJsonObject>& Pa
 	if (Operation == TEXT("start_monitor")) return ExecuteStartMonitor(Params);
 	if (Operation == TEXT("stop_monitor")) return ExecuteStopMonitor(Params);
 	if (Operation == TEXT("monitor_status")) return ExecuteMonitorStatus(Params);
+	if (Operation == TEXT("play_montage")) return ExecutePlayMontage(Params);
+	if (Operation == TEXT("montage_jump_to_section")) return ExecuteMontageJumpToSection(Params);
+	if (Operation == TEXT("montage_stop")) return ExecuteMontageStop(Params);
 
 	return FMCPToolResult::Error(FString::Printf(
 		TEXT("Unknown operation: %s. Valid: run_sequence, start_pie, stop_pie, pie_status, inject_input, "
 			"start_continuous, update_continuous, stop_continuous, capture_pie, execute_sequence, sequence_status, "
-			"start_monitor, stop_monitor, monitor_status"),
+			"start_monitor, stop_monitor, monitor_status, play_montage, montage_jump_to_section, montage_stop"),
 		*Operation));
 }
 
@@ -650,6 +653,7 @@ FMCPToolResult FMCPTool_GameplayDebug::ExecuteRunSequence(const TSharedRef<FJson
 			ApplyFileDefault(TEXT("settle_ms"));
 			ApplyFileDefault(TEXT("output_dir"));
 			ApplyFileDefault(TEXT("auto_capture_every_n_frames"));
+			ApplyFileDefault(TEXT("max_duration_ms"));
 		}
 		else
 		{
@@ -835,10 +839,22 @@ FMCPToolResult FMCPTool_GameplayDebug::ExecuteRunSequence(const TSharedRef<FJson
 		AutoCapEveryNFrames = static_cast<int32>(AutoCapDouble);
 	}
 
+	int32 MaxDurationMs = 120000;
+	double MaxDurDouble = 0.0;
+	if (Params->TryGetNumberField(TEXT("max_duration_ms"), MaxDurDouble))
+	{
+		MaxDurationMs = static_cast<int32>(MaxDurDouble);
+	}
+
+	bool bTakeRecord = false;
+	Params->TryGetBoolField(TEXT("take_record"), bTakeRecord);
+	FString TakeSlate = ExtractOptionalString(Params, TEXT("take_slate"), TEXT(""));
+
 	int32 EstimatedDurationMs = SettleMs + static_cast<int32>(MaxCompletionMs) + 500;
 
 	ActiveSequence = MakeShared<FPIESequenceRunner>();
-	ActiveSequence->StartRunSequence(Steps, SettleMs, OutputDir, PreLoadedActions, AutoCapEveryNFrames);
+	ActiveSequence->StartRunSequence(Steps, SettleMs, OutputDir, PreLoadedActions,
+		AutoCapEveryNFrames, MaxDurationMs, bTakeRecord, TakeSlate);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("name"), Name);
@@ -846,9 +862,18 @@ FMCPToolResult FMCPTool_GameplayDebug::ExecuteRunSequence(const TSharedRef<FJson
 	Data->SetStringField(TEXT("output_dir"), OutputDir);
 	Data->SetNumberField(TEXT("estimated_duration_ms"), EstimatedDurationMs);
 	Data->SetNumberField(TEXT("settle_ms"), SettleMs);
+	Data->SetNumberField(TEXT("max_duration_ms"), MaxDurationMs);
 	if (AutoCapEveryNFrames > 0)
 	{
 		Data->SetNumberField(TEXT("auto_capture_every_n_frames"), AutoCapEveryNFrames);
+	}
+	if (bTakeRecord)
+	{
+		Data->SetBoolField(TEXT("take_record"), true);
+		if (!TakeSlate.IsEmpty())
+		{
+			Data->SetStringField(TEXT("take_slate"), TakeSlate);
+		}
 	}
 	Data->SetStringField(TEXT("manifest_path"), OutputDir / TEXT("manifest.json"));
 	Data->SetStringField(TEXT("note"), TEXT("Sequence running autonomously. Sleep for estimated_duration_ms + margin, then read manifest.json."));
@@ -1306,6 +1331,234 @@ void FMCPTool_GameplayDebug::MonitorLogStateSnapshot(UWorld* PIEWorld)
 int64 FMCPTool_GameplayDebug::MonitorGetElapsedMs() const
 {
 	return static_cast<int64>((FPlatformTime::Seconds() - Monitor.StartTimeSeconds) * 1000.0);
+}
+
+// ============================================================================
+// Montage Control
+// ============================================================================
+
+namespace
+{
+	USkeletalMeshComponent* FindSkeletalMeshComponent(UWorld* PIEWorld, const FString& ComponentName)
+	{
+		if (!PIEWorld) return nullptr;
+		APlayerController* PC = PIEWorld->GetFirstPlayerController();
+		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+		if (!Pawn) return nullptr;
+
+		if (ComponentName.IsEmpty())
+		{
+			// Default: ACharacter::GetMesh() or first SkeletalMeshComponent
+			ACharacter* Character = Cast<ACharacter>(Pawn);
+			if (Character && Character->GetMesh())
+			{
+				return Character->GetMesh();
+			}
+			return Pawn->FindComponentByClass<USkeletalMeshComponent>();
+		}
+
+		// Named: search all SkeletalMeshComponents by GetName()
+		TArray<USkeletalMeshComponent*> Components;
+		Pawn->GetComponents<USkeletalMeshComponent>(Components);
+		for (USkeletalMeshComponent* Comp : Components)
+		{
+			if (Comp && Comp->GetName() == ComponentName)
+			{
+				return Comp;
+			}
+		}
+		return nullptr;
+	}
+}
+
+FMCPToolResult FMCPTool_GameplayDebug::ExecutePlayMontage(const TSharedRef<FJsonObject>& Params)
+{
+	UWorld* PIEWorld = FindPIEWorld();
+	if (!PIEWorld)
+	{
+		return FMCPToolResult::Error(TEXT("No PIE session running. Call start_pie first."));
+	}
+
+	FString MontagePath;
+	TOptional<FMCPToolResult> Error;
+	if (!ExtractRequiredString(Params, TEXT("montage_path"), MontagePath, Error))
+	{
+		return Error.GetValue();
+	}
+
+	FString ComponentName = ExtractOptionalString(Params, TEXT("component_name"));
+	float PlayRate = ExtractOptionalNumber<float>(Params, TEXT("play_rate"), 1.0f);
+	FString StartSection = ExtractOptionalString(Params, TEXT("start_section"));
+
+	// Load the montage
+	FString AdjustedPath = MontagePath;
+	if (!AdjustedPath.Contains(TEXT(".")))
+	{
+		AdjustedPath += TEXT(".") + FPaths::GetBaseFilename(MontagePath);
+	}
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *AdjustedPath);
+	if (!Montage)
+	{
+		Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+	}
+	if (!Montage)
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to load AnimMontage: %s"), *MontagePath));
+	}
+
+	USkeletalMeshComponent* MeshComp = FindSkeletalMeshComponent(PIEWorld, ComponentName);
+	if (!MeshComp)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("SkeletalMeshComponent '%s' not found on pawn"), *ComponentName));
+	}
+
+	UAnimInstance* AnimInstance = MeshComp->GetAnimInstance();
+	if (!AnimInstance)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("No AnimInstance on component '%s'"), *MeshComp->GetName()));
+	}
+
+	float Duration = AnimInstance->Montage_Play(Montage, PlayRate);
+	if (Duration <= 0.f)
+	{
+		return FMCPToolResult::Error(TEXT("Montage_Play returned 0 — montage may be incompatible with skeleton"));
+	}
+
+	if (!StartSection.IsEmpty())
+	{
+		AnimInstance->Montage_JumpToSection(FName(*StartSection), Montage);
+	}
+
+	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
+	ResultData->SetStringField(TEXT("montage"), Montage->GetName());
+	ResultData->SetStringField(TEXT("component"), MeshComp->GetName());
+	ResultData->SetNumberField(TEXT("duration"), Duration);
+	ResultData->SetNumberField(TEXT("play_rate"), PlayRate);
+	if (!StartSection.IsEmpty())
+	{
+		ResultData->SetStringField(TEXT("start_section"), StartSection);
+	}
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Playing montage '%s' on '%s' (duration=%.2fs, rate=%.1f)"),
+			*Montage->GetName(), *MeshComp->GetName(), Duration, PlayRate),
+		ResultData);
+}
+
+FMCPToolResult FMCPTool_GameplayDebug::ExecuteMontageJumpToSection(const TSharedRef<FJsonObject>& Params)
+{
+	UWorld* PIEWorld = FindPIEWorld();
+	if (!PIEWorld)
+	{
+		return FMCPToolResult::Error(TEXT("No PIE session running."));
+	}
+
+	FString SectionName;
+	TOptional<FMCPToolResult> Error;
+	if (!ExtractRequiredString(Params, TEXT("section_name"), SectionName, Error))
+	{
+		return Error.GetValue();
+	}
+
+	FString ComponentName = ExtractOptionalString(Params, TEXT("component_name"));
+	FString MontagePath = ExtractOptionalString(Params, TEXT("montage_path"));
+
+	USkeletalMeshComponent* MeshComp = FindSkeletalMeshComponent(PIEWorld, ComponentName);
+	if (!MeshComp)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("SkeletalMeshComponent '%s' not found on pawn"), *ComponentName));
+	}
+
+	UAnimInstance* AnimInstance = MeshComp->GetAnimInstance();
+	if (!AnimInstance)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("No AnimInstance on component '%s'"), *MeshComp->GetName()));
+	}
+
+	// If montage_path specified, load it; otherwise use current active montage
+	UAnimMontage* Montage = nullptr;
+	if (!MontagePath.IsEmpty())
+	{
+		FString AdjustedPath = MontagePath;
+		if (!AdjustedPath.Contains(TEXT(".")))
+		{
+			AdjustedPath += TEXT(".") + FPaths::GetBaseFilename(MontagePath);
+		}
+		Montage = LoadObject<UAnimMontage>(nullptr, *AdjustedPath);
+		if (!Montage)
+		{
+			Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+		}
+		if (!Montage)
+		{
+			return FMCPToolResult::Error(FString::Printf(TEXT("Failed to load AnimMontage: %s"), *MontagePath));
+		}
+	}
+	else
+	{
+		Montage = AnimInstance->GetCurrentActiveMontage();
+		if (!Montage)
+		{
+			return FMCPToolResult::Error(TEXT("No active montage and no montage_path specified"));
+		}
+	}
+
+	AnimInstance->Montage_JumpToSection(FName(*SectionName), Montage);
+
+	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
+	ResultData->SetStringField(TEXT("section"), SectionName);
+	ResultData->SetStringField(TEXT("montage"), Montage->GetName());
+	ResultData->SetStringField(TEXT("component"), MeshComp->GetName());
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Jumped to section '%s' in montage '%s' on '%s'"),
+			*SectionName, *Montage->GetName(), *MeshComp->GetName()),
+		ResultData);
+}
+
+FMCPToolResult FMCPTool_GameplayDebug::ExecuteMontageStop(const TSharedRef<FJsonObject>& Params)
+{
+	UWorld* PIEWorld = FindPIEWorld();
+	if (!PIEWorld)
+	{
+		return FMCPToolResult::Error(TEXT("No PIE session running."));
+	}
+
+	FString ComponentName = ExtractOptionalString(Params, TEXT("component_name"));
+	float BlendOutTime = ExtractOptionalNumber<float>(Params, TEXT("blend_out_time"), 0.25f);
+
+	USkeletalMeshComponent* MeshComp = FindSkeletalMeshComponent(PIEWorld, ComponentName);
+	if (!MeshComp)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("SkeletalMeshComponent '%s' not found on pawn"), *ComponentName));
+	}
+
+	UAnimInstance* AnimInstance = MeshComp->GetAnimInstance();
+	if (!AnimInstance)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("No AnimInstance on component '%s'"), *MeshComp->GetName()));
+	}
+
+	UAnimMontage* ActiveMontage = AnimInstance->GetCurrentActiveMontage();
+	FString MontageName = ActiveMontage ? ActiveMontage->GetName() : TEXT("None");
+
+	AnimInstance->Montage_Stop(BlendOutTime);
+
+	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
+	ResultData->SetStringField(TEXT("stopped_montage"), MontageName);
+	ResultData->SetStringField(TEXT("component"), MeshComp->GetName());
+	ResultData->SetNumberField(TEXT("blend_out_time"), BlendOutTime);
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Stopped montage '%s' on '%s' (blend=%.2fs)"),
+			*MontageName, *MeshComp->GetName(), BlendOutTime),
+		ResultData);
 }
 
 // ============================================================================

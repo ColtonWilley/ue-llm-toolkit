@@ -72,6 +72,7 @@ public class UELLMToolkit : ModuleRules
 				"InterchangePipelines",
 				// Enhanced Input
 				"EnhancedInput",
+				"InputBlueprintNodes",
 				// WidgetComponent lives in UMG
 				"UMG",
 				// Widget Blueprint editor (UWidgetBlueprint, UWidgetTree)
@@ -83,7 +84,22 @@ public class UELLMToolkit : ModuleRules
 				// RHI (FRHIGPUTextureReadback for high-speed PIE frame capture)
 				"RHI",
 				// MovieSceneCapture (FFrameGrabber for async PIE auto-capture)
-				"MovieSceneCapture"
+				"MovieSceneCapture",
+				// Skeletal mesh bone editing (USkeletonModifier)
+				"SkeletalMeshModifiers",
+				// Skeletal mesh vertex retransformation (FSkeletalMeshOperations)
+				"SkeletalMeshDescription",
+				// Static mesh vertex transform (FStaticMeshOperations::ApplyTransform)
+				"StaticMeshDescription",
+				// Sequencer / Take Recorder
+				"LevelSequence",
+				"LevelSequenceEditor",
+				"MovieScene",
+				"MovieSceneTracks",
+				"Sequencer",
+				"TakesCore",
+				"TakeRecorder",
+				"TakeRecorderSources"
 			}
 		);
 

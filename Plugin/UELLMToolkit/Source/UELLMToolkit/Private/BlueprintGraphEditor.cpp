@@ -14,6 +14,7 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetStringLibrary.h"
+#include "Kismet/GameplayStatics.h"
 #include "Animation/AnimInstance.h"
 #include "HAL/PlatformAtomics.h"
 // AnimGraph node types
@@ -23,6 +24,9 @@
 #include "AnimGraphNode_CustomProperty.h"
 #include "ControlRig.h"
 #include "Animation/AnimationAsset.h"
+// Enhanced Input event node
+#include "K2Node_EnhancedInputAction.h"
+#include "InputAction.h"
 
 // Static member initialization
 volatile int32 FBlueprintGraphEditor::NodeIdCounter = 0;
@@ -142,6 +146,12 @@ UEdGraphNode* FBlueprintGraphEditor::CreateNode(
 		Context = EventName;
 		NewNode = CreateEventNode(Graph, EventName, PosX, PosY, OutError);
 	}
+	else if (NodeType.Equals(TEXT("EnhancedInputAction"), ESearchCase::IgnoreCase))
+	{
+		FString ActionPath = NodeParams.IsValid() ? NodeParams->GetStringField(TEXT("action_path")) : TEXT("");
+		Context = ActionPath;
+		NewNode = CreateEnhancedInputActionNode(Graph, ActionPath, PosX, PosY, OutError);
+	}
 	else if (NodeType.Equals(TEXT("VariableGet"), ESearchCase::IgnoreCase) || NodeType.Equals(TEXT("GetVariable"), ESearchCase::IgnoreCase))
 	{
 		FString VariableName = NodeParams.IsValid() ? NodeParams->GetStringField(TEXT("variable")) : TEXT("");
@@ -194,7 +204,7 @@ UEdGraphNode* FBlueprintGraphEditor::CreateNode(
 	}
 	else
 	{
-		OutError = FString::Printf(TEXT("Unknown node type: '%s'. Supported: CallFunction, Branch, Event, VariableGet, VariableSet, Sequence, Add, Subtract, Multiply, Divide, PrintString, ModifyBone, TwoBoneIK, ControlRig"), *NodeType);
+		OutError = FString::Printf(TEXT("Unknown node type: '%s'. Supported: CallFunction, Branch, Event, EnhancedInputAction, VariableGet, VariableSet, Sequence, Add, Subtract, Multiply, Divide, PrintString, ModifyBone, TwoBoneIK, ControlRig"), *NodeType);
 		return nullptr;
 	}
 
@@ -725,6 +735,10 @@ UEdGraphNode* FBlueprintGraphEditor::CreateCallFunctionNode(
 			{
 				FunctionOwner = UAnimInstance::StaticClass();
 			}
+			else if (TargetClass.Equals(TEXT("GameplayStatics"), ESearchCase::IgnoreCase))
+			{
+				FunctionOwner = UGameplayStatics::StaticClass();
+			}
 		}
 	}
 	else
@@ -750,6 +764,10 @@ UEdGraphNode* FBlueprintGraphEditor::CreateCallFunctionNode(
 	if (!Function)
 	{
 		Function = UKismetStringLibrary::StaticClass()->FindFunctionByName(FName(*FunctionName));
+	}
+	if (!Function)
+	{
+		Function = UGameplayStatics::StaticClass()->FindFunctionByName(FName(*FunctionName));
 	}
 
 	if (!Function)
@@ -1102,6 +1120,45 @@ UEdGraphNode* FBlueprintGraphEditor::CreateTwoBoneIKNode(
 	NodeCreator.Finalize();
 
 	return IKNode;
+}
+
+UEdGraphNode* FBlueprintGraphEditor::CreateEnhancedInputActionNode(
+	UEdGraph* Graph,
+	const FString& ActionPath,
+	int32 PosX,
+	int32 PosY,
+	FString& OutError)
+{
+	if (ActionPath.IsEmpty())
+	{
+		OutError = TEXT("action_path is required for EnhancedInputAction (e.g. '/Game/Input/IA_Look')");
+		return nullptr;
+	}
+
+	// Load the UInputAction asset
+	UInputAction* InputAction = LoadObject<UInputAction>(nullptr, *ActionPath);
+	if (!InputAction)
+	{
+		OutError = FString::Printf(TEXT("InputAction '%s' not found"), *ActionPath);
+		return nullptr;
+	}
+
+	// Create the node
+	FGraphNodeCreator<UK2Node_EnhancedInputAction> NodeCreator(*Graph);
+	UK2Node_EnhancedInputAction* ActionNode = NodeCreator.CreateNode();
+	ActionNode->InputAction = InputAction;
+	ActionNode->NodePosX = PosX;
+	ActionNode->NodePosY = PosY;
+	NodeCreator.Finalize();
+
+	// AllocateDefaultPins is called by Finalize, which creates:
+	// - Exec output pins for each ETriggerEvent (Started, Ongoing, Triggered, Completed, Canceled)
+	// - ActionValue output pin (type matches InputAction ValueType)
+	// - ElapsedSeconds, TriggeredSeconds output pins
+	// - InputAction output pin
+	// "Triggered" is the most commonly used exec pin.
+
+	return ActionNode;
 }
 
 UEdGraphNode* FBlueprintGraphEditor::CreateControlRigNode(

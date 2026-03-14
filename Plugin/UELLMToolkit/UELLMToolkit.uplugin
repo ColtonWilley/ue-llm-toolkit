@@ -1,13 +1,13 @@
 {
 	"FileVersion": 3,
-	"Version": 1,
-	"VersionName": "1.0.0",
+	"Version": 4,
+	"VersionName": "1.2.2",
 	"FriendlyName": "UE LLM Toolkit",
-	"Description": "HTTP REST API plugin for LLM-driven Unreal Engine editor automation. 37 tools, 200+ operations — Blueprint editing, animation, materials, level management, and more.",
+	"Description": "HTTP REST API plugin for LLM-driven Unreal Engine editor automation. 38 tools, 201 operations — Blueprint editing, animation, materials, level management, and more.",
 	"Category": "Editor",
 	"CreatedBy": "Natali Caggiano",
 	"CreatedByURL": "https://github.com/Natfii",
-	"DocsURL": "https://github.com/OWNER/ue-llm-toolkit",
+	"DocsURL": "https://github.com/ColtonWilley/ue-llm-toolkit",
 	"MarketplaceURL": "",
 	"SupportURL": "",
 	"CanContainContent": false,
@@ -15,7 +15,6 @@
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"EnabledByDefault": true,
-	"EngineVersion": "5.6.0",
 	"SupportedTargetPlatforms": [ "Win64", "Linux" ],
 	"Modules": [
 		{
@@ -40,6 +39,14 @@
 		},
 		{
 			"Name": "IKRig",
+			"Enabled": true
+		},
+		{
+			"Name": "Takes",
+			"Enabled": true
+		},
+		{
+			"Name": "LevelSequenceEditor",
 			"Enabled": true
 		}
 	]

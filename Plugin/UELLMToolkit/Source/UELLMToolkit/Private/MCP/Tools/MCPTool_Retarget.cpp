@@ -55,6 +55,14 @@ FMCPToolResult FMCPTool_Retarget::Execute(const TSharedRef<FJsonObject>& Params)
 	{
 		return HandleListSkeletons(Params);
 	}
+	else if (Operation == TEXT("add_bone"))
+	{
+		return HandleAddBone(Params);
+	}
+	else if (Operation == TEXT("copy_bone_tracks"))
+	{
+		return HandleCopyBoneTracks(Params);
+	}
 	// IK Rig
 	else if (Operation == TEXT("inspect_ik_rig"))
 	{
@@ -135,7 +143,7 @@ FMCPToolResult FMCPTool_Retarget::Execute(const TSharedRef<FJsonObject>& Params)
 	}
 
 	return FMCPToolResult::Error(FString::Printf(
-		TEXT("Unknown operation: '%s'. Valid: inspect_skeleton, inspect_ref_pose, list_skeletons, inspect_ik_rig, create_ik_rig, add_chain, remove_chain, inspect_retargeter, create_retargeter, setup_ops, configure_fk, import_fbx, batch_import_fbx, batch_retarget, set_root_motion, find_anims, save, inspect_anim, compare_bones, sample_bones, diagnose_anim"),
+		TEXT("Unknown operation: '%s'. Valid: inspect_skeleton, inspect_ref_pose, list_skeletons, add_bone, copy_bone_tracks, inspect_ik_rig, create_ik_rig, add_chain, remove_chain, inspect_retargeter, create_retargeter, setup_ops, configure_fk, import_fbx, batch_import_fbx, batch_retarget, set_root_motion, find_anims, save, inspect_anim, compare_bones, sample_bones, diagnose_anim"),
 		*Operation));
 }
 
@@ -175,6 +183,71 @@ FMCPToolResult FMCPTool_Retarget::HandleListSkeletons(const TSharedRef<FJsonObje
 
 	TSharedPtr<FJsonObject> Result = FRetargetEditor::ListSkeletons(FolderPath);
 	return RetargetJsonToToolResult(Result, TEXT("Skeletons listed"));
+}
+
+FMCPToolResult FMCPTool_Retarget::HandleAddBone(const TSharedRef<FJsonObject>& Params)
+{
+	FString SkeletonPath, BoneName, ParentBone;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("skeleton_path"), SkeletonPath, Error))
+		return Error.GetValue();
+	if (!ExtractRequiredString(Params, TEXT("bone_name"), BoneName, Error))
+		return Error.GetValue();
+	if (!ExtractRequiredString(Params, TEXT("parent_bone"), ParentBone, Error))
+		return Error.GetValue();
+
+	FVector Position = FVector::ZeroVector;
+	const TSharedPtr<FJsonObject>* PosObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("position"), PosObj) && PosObj)
+	{
+		(*PosObj)->TryGetNumberField(TEXT("x"), Position.X);
+		(*PosObj)->TryGetNumberField(TEXT("y"), Position.Y);
+		(*PosObj)->TryGetNumberField(TEXT("z"), Position.Z);
+	}
+
+	FQuat Rotation = FQuat::Identity;
+	const TSharedPtr<FJsonObject>* RotObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("rotation"), RotObj) && RotObj)
+	{
+		double X = 0, Y = 0, Z = 0, W = 1;
+		(*RotObj)->TryGetNumberField(TEXT("x"), X);
+		(*RotObj)->TryGetNumberField(TEXT("y"), Y);
+		(*RotObj)->TryGetNumberField(TEXT("z"), Z);
+		(*RotObj)->TryGetNumberField(TEXT("w"), W);
+		Rotation = FQuat(X, Y, Z, W);
+	}
+
+	TSharedPtr<FJsonObject> Result = FRetargetEditor::AddBoneToSkeleton(
+		SkeletonPath, BoneName, ParentBone, Position, Rotation);
+	return RetargetJsonToToolResult(Result, TEXT("Bone added"));
+}
+
+FMCPToolResult FMCPTool_Retarget::HandleCopyBoneTracks(const TSharedRef<FJsonObject>& Params)
+{
+	FString SourceAnimPath, TargetAnimPath;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("source_anim_path"), SourceAnimPath, Error))
+		return Error.GetValue();
+	if (!ExtractRequiredString(Params, TEXT("target_anim_path"), TargetAnimPath, Error))
+		return Error.GetValue();
+
+	const TArray<TSharedPtr<FJsonValue>>* BoneNamesArray = nullptr;
+	if (!Params->TryGetArrayField(TEXT("bone_names"), BoneNamesArray) || !BoneNamesArray)
+	{
+		return FMCPToolResult::Error(TEXT("Missing required parameter: bone_names (JSON array)"));
+	}
+
+	TArray<FString> BoneNames;
+	for (const TSharedPtr<FJsonValue>& Val : *BoneNamesArray)
+	{
+		BoneNames.Add(Val->AsString());
+	}
+
+	TSharedPtr<FJsonObject> Result = FRetargetEditor::CopyBoneTracks(
+		SourceAnimPath, TargetAnimPath, BoneNames);
+	return RetargetJsonToToolResult(Result, TEXT("Bone tracks copied"));
 }
 
 // ============================================================================

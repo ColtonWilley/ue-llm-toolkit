@@ -13,6 +13,7 @@ class UBlendSpace1D;
 class UAnimMontage;
 class UAnimationAsset;
 class USkeleton;
+class UAimOffsetBlendSpace;
 class UAnimStateNode;
 class UEdGraph;
 
@@ -64,6 +65,11 @@ public:
 	 * Load any animation asset (auto-detect type)
 	 */
 	static UAnimationAsset* LoadAnimationAsset(const FString& AssetPath, FString& OutError);
+
+	/**
+	 * Load AimOffsetBlendSpace
+	 */
+	static UAimOffsetBlendSpace* LoadAimOffset(const FString& AssetPath, FString& OutError);
 
 	// ===== Asset Validation =====
 

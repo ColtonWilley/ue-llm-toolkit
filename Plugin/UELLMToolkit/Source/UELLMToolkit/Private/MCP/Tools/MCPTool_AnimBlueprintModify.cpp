@@ -15,6 +15,9 @@
 #include "AnimGraphNode_Root.h"
 #include "AnimGraphNode_StateResult.h"
 #include "AnimGraphNode_TransitionResult.h"
+#include "BoneControllers/AnimNode_ModifyBone.h"
+#include "ControlRig.h"
+#include "Animation/AimOffsetBlendSpace.h"
 
 FMCPToolResult FMCPTool_AnimBlueprintModify::Execute(const TSharedRef<FJsonObject>& Params)
 {
@@ -143,6 +146,10 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::Execute(const TSharedRef<FJsonObjec
 	else if (Operation == TEXT("get_state_machine_diagram"))
 	{
 		return HandleGetStateMachineDiagram(BlueprintPath, Params);
+	}
+	else if (Operation == TEXT("get_anim_node_property"))
+	{
+		return HandleGetAnimNodeProperty(BlueprintPath, Params);
 	}
 	else if (Operation == TEXT("set_anim_node_property"))
 	{
@@ -949,21 +956,86 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleInspectNodePins(const FString
 	FString StateMachineName = ExtractOptionalString(Params, TEXT("state_machine"));
 	FString FromState = ExtractOptionalString(Params, TEXT("from_state"));
 	FString ToState = ExtractOptionalString(Params, TEXT("to_state"));
+	FString StateName = ExtractOptionalString(Params, TEXT("state_name"));
 	FString NodeId = ExtractOptionalString(Params, TEXT("node_id"));
 
-	if (StateMachineName.IsEmpty() || FromState.IsEmpty() || ToState.IsEmpty() || NodeId.IsEmpty())
+	if (StateMachineName.IsEmpty() || NodeId.IsEmpty())
 	{
-		return FMCPToolResult::Error(TEXT("state_machine, from_state, to_state, and node_id parameters required"));
+		return FMCPToolResult::Error(TEXT("state_machine and node_id parameters required"));
+	}
+
+	bool bUseStateBound = !StateName.IsEmpty();
+	bool bUseTransition = !FromState.IsEmpty() && !ToState.IsEmpty();
+
+	if (!bUseStateBound && !bUseTransition)
+	{
+		return FMCPToolResult::Error(TEXT("Either state_name OR (from_state + to_state) required"));
 	}
 
 	FString Error;
-	TSharedPtr<FJsonObject> Result = FAnimationBlueprintUtils::InspectNodePins(
-		AnimBP, StateMachineName, FromState, ToState, NodeId, Error);
+	UEdGraph* Graph = nullptr;
 
-	if (!Result->GetBoolField(TEXT("success")))
+	if (bUseStateBound)
 	{
-		return FMCPToolResult::Error(Result->GetStringField(TEXT("error")));
+		Graph = FAnimGraphEditor::FindStateBoundGraph(AnimBP, StateMachineName, StateName, Error);
 	}
+	else
+	{
+		Graph = FAnimGraphEditor::FindTransitionGraph(AnimBP, StateMachineName, FromState, ToState, Error);
+	}
+
+	if (!Graph)
+	{
+		return FMCPToolResult::Error(Error);
+	}
+
+	UEdGraphNode* Node = FAnimGraphEditor::FindNodeById(Graph, NodeId);
+	if (!Node)
+	{
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (N && N->GetNodeTitle(ENodeTitleType::FullTitle).ToString().Contains(NodeId))
+			{
+				Node = N;
+				break;
+			}
+		}
+	}
+
+	if (!Node)
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Node '%s' not found"), *NodeId));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("node_id"), NodeId);
+	Result->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+	Result->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+	Result->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+	Result->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+
+	TArray<TSharedPtr<FJsonValue>> InputPins;
+	TArray<TSharedPtr<FJsonValue>> OutputPins;
+
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin) continue;
+
+		TSharedPtr<FJsonObject> PinObj = FAnimGraphEditor::SerializeDetailedPinInfo(Pin);
+
+		if (Pin->Direction == EGPD_Input)
+		{
+			InputPins.Add(MakeShared<FJsonValueObject>(PinObj));
+		}
+		else
+		{
+			OutputPins.Add(MakeShared<FJsonValueObject>(PinObj));
+		}
+	}
+
+	Result->SetArrayField(TEXT("input_pins"), InputPins);
+	Result->SetArrayField(TEXT("output_pins"), OutputPins);
 
 	return FMCPToolResult::Success(TEXT("Operation completed"), Result);
 }
@@ -979,21 +1051,94 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleSetPinDefaultValue(const FStr
 	FString StateMachineName = ExtractOptionalString(Params, TEXT("state_machine"));
 	FString FromState = ExtractOptionalString(Params, TEXT("from_state"));
 	FString ToState = ExtractOptionalString(Params, TEXT("to_state"));
+	FString StateName = ExtractOptionalString(Params, TEXT("state_name"));
 	FString NodeId = ExtractOptionalString(Params, TEXT("node_id"));
 	FString PinName = ExtractOptionalString(Params, TEXT("pin_name"));
 	FString PinValue = ExtractOptionalString(Params, TEXT("pin_value"));
 
-	if (StateMachineName.IsEmpty() || FromState.IsEmpty() || ToState.IsEmpty() ||
-		NodeId.IsEmpty() || PinName.IsEmpty())
+	if (StateMachineName.IsEmpty() || NodeId.IsEmpty() || PinName.IsEmpty())
 	{
-		return FMCPToolResult::Error(TEXT("state_machine, from_state, to_state, node_id, and pin_name parameters required"));
+		return FMCPToolResult::Error(TEXT("state_machine, node_id, and pin_name parameters required"));
+	}
+
+	bool bUseStateBound = !StateName.IsEmpty();
+	bool bUseTransition = !FromState.IsEmpty() && !ToState.IsEmpty();
+
+	if (!bUseStateBound && !bUseTransition)
+	{
+		return FMCPToolResult::Error(TEXT("Either state_name OR (from_state + to_state) required"));
 	}
 
 	FString Error;
-	if (!FAnimationBlueprintUtils::SetPinDefaultValue(
-		AnimBP, StateMachineName, FromState, ToState, NodeId, PinName, PinValue, Error))
+
+	if (bUseStateBound)
 	{
-		return FMCPToolResult::Error(Error);
+		UEdGraph* Graph = FAnimGraphEditor::FindStateBoundGraph(AnimBP, StateMachineName, StateName, Error);
+		if (!Graph)
+		{
+			return FMCPToolResult::Error(Error);
+		}
+
+		UEdGraphNode* Node = FAnimGraphEditor::FindNodeById(Graph, NodeId);
+		if (!Node)
+		{
+			for (UEdGraphNode* N : Graph->Nodes)
+			{
+				if (N && N->GetNodeTitle(ENodeTitleType::FullTitle).ToString().Contains(NodeId))
+				{
+					Node = N;
+					break;
+				}
+			}
+		}
+		if (!Node)
+		{
+			return FMCPToolResult::Error(FString::Printf(TEXT("Node '%s' not found"), *NodeId));
+		}
+
+		UEdGraphPin* Pin = nullptr;
+		for (UEdGraphPin* P : Node->Pins)
+		{
+			if (P && P->Direction == EGPD_Input && P->PinName.ToString() == PinName)
+			{
+				Pin = P;
+				break;
+			}
+		}
+		if (!Pin)
+		{
+			FString AvailablePins;
+			for (UEdGraphPin* P : Node->Pins)
+			{
+				if (P && P->Direction == EGPD_Input)
+				{
+					AvailablePins += FString::Printf(TEXT("[%s] "), *P->PinName.ToString());
+				}
+			}
+			return FMCPToolResult::Error(FString::Printf(TEXT("Input pin '%s' not found. Available: %s"),
+				*PinName, AvailablePins.IsEmpty() ? TEXT("none") : *AvailablePins));
+		}
+
+		const UEdGraphSchema* Schema = Graph->GetSchema();
+		if (Schema)
+		{
+			Schema->TrySetDefaultValue(*Pin, PinValue);
+		}
+		else
+		{
+			Pin->DefaultValue = PinValue;
+		}
+
+		Graph->Modify();
+		FAnimationBlueprintUtils::MarkAnimBlueprintModified(AnimBP);
+	}
+	else
+	{
+		if (!FAnimationBlueprintUtils::SetPinDefaultValue(
+			AnimBP, StateMachineName, FromState, ToState, NodeId, PinName, PinValue, Error))
+		{
+			return FMCPToolResult::Error(Error);
+		}
 	}
 
 	FAnimationBlueprintUtils::CompileAnimBlueprint(AnimBP, Error);
@@ -1096,6 +1241,55 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleGetStateMachineDiagram(
 	// Return ASCII diagram in message for easy viewing, with full JSON data
 	FString AsciiDiagram = Result->GetStringField(TEXT("ascii_diagram"));
 	return FMCPToolResult::Success(AsciiDiagram, Result);
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleGetAnimNodeProperty(const FString& BlueprintPath, const TSharedRef<FJsonObject>& Params)
+{
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		return ErrorResult.GetValue();
+	}
+
+	FString NodeId = ExtractOptionalString(Params, TEXT("node_id"));
+	if (NodeId.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("node_id parameter required"));
+	}
+
+	FString PropertyName = ExtractOptionalString(Params, TEXT("property_name"));
+	FString StateMachineName = ExtractOptionalString(Params, TEXT("state_machine"));
+	FString StateName = ExtractOptionalString(Params, TEXT("state_name"));
+	FString TargetGraphName = ExtractOptionalString(Params, TEXT("target_graph"));
+
+	FString Error;
+	UEdGraph* Graph = nullptr;
+	if (!StateMachineName.IsEmpty() && !StateName.IsEmpty())
+	{
+		Graph = FAnimGraphEditor::FindStateBoundGraph(AnimBP, StateMachineName, StateName, Error);
+	}
+	else if (!TargetGraphName.IsEmpty())
+	{
+		Graph = FAnimLayerEditor::FindLayerFunctionGraph(AnimBP, TargetGraphName, Error);
+	}
+	else
+	{
+		Graph = FAnimGraphEditor::FindAnimGraph(AnimBP, Error);
+	}
+
+	if (!Graph)
+	{
+		return FMCPToolResult::Error(Error);
+	}
+
+	TSharedPtr<FJsonObject> Result;
+	if (!FAnimGraphEditor::GetAnimNodeProperty(Graph, NodeId, PropertyName, Result, Error))
+	{
+		return FMCPToolResult::Error(Error);
+	}
+
+	Result->SetBoolField(TEXT("success"), true);
+	return FMCPToolResult::Success(TEXT("Operation completed"), Result);
 }
 
 FMCPToolResult FMCPTool_AnimBlueprintModify::HandleSetAnimNodeProperty(const FString& BlueprintPath, const TSharedRef<FJsonObject>& Params)
@@ -1534,10 +1728,17 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleAddAnimNode(const FString& Bl
 
 	if (AnimType.IsEmpty())
 	{
-		return FMCPToolResult::Error(TEXT("animation_type parameter required (sequence, blendspace, blendspace1d, slot, inertialization, dead_blending)"));
+		return FMCPToolResult::Error(TEXT("animation_type parameter required (sequence, blendspace, blendspace1d, slot, inertialization, dead_blending, copy_pose_from_mesh, modify_bone, two_bone_ik, control_rig, layered_blend_per_bone, aim_offset, local_to_component, component_to_local)"));
 	}
 	if (AnimPath.IsEmpty() && AnimType != TEXT("slot")
-		&& AnimType != TEXT("inertialization") && AnimType != TEXT("dead_blending"))
+		&& AnimType != TEXT("inertialization") && AnimType != TEXT("dead_blending")
+		&& AnimType != TEXT("copy_pose_from_mesh")
+		&& AnimType != TEXT("modify_bone")
+		&& AnimType != TEXT("two_bone_ik")
+		&& AnimType != TEXT("control_rig")
+		&& AnimType != TEXT("layered_blend_per_bone")
+		&& AnimType != TEXT("local_to_component")
+		&& AnimType != TEXT("component_to_local"))
 	{
 		return FMCPToolResult::Error(TEXT("animation_path parameter required"));
 	}
@@ -1631,10 +1832,162 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleAddAnimNode(const FString& Bl
 		CreatedNode = FAnimAssetNodeFactory::CreateDeadBlendingNode(TargetGraph, Position, NodeId, Error);
 		NodeClass = TEXT("AnimGraphNode_DeadBlending");
 	}
+	else if (AnimType == TEXT("copy_pose_from_mesh"))
+	{
+		bool bUseAttachedParent = ExtractOptionalBool(Params, TEXT("use_attached_parent"), true);
+		CreatedNode = FAnimAssetNodeFactory::CreateCopyPoseFromMeshNode(TargetGraph, bUseAttachedParent, Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_CopyPoseFromMesh");
+	}
+	else if (AnimType == TEXT("modify_bone"))
+	{
+		FString BoneName = ExtractOptionalString(Params, TEXT("bone_name"));
+		if (BoneName.IsEmpty())
+		{
+			return FMCPToolResult::Error(TEXT("bone_name parameter required for modify_bone"));
+		}
+
+		// Parse rotation (default: zero)
+		FRotator Rotation = FRotator::ZeroRotator;
+		if (const TSharedPtr<FJsonObject>* RotObj; Params->TryGetObjectField(TEXT("rotation"), RotObj))
+		{
+			Rotation.Pitch = (*RotObj)->GetNumberField(TEXT("pitch"));
+			Rotation.Yaw = (*RotObj)->GetNumberField(TEXT("yaw"));
+			Rotation.Roll = (*RotObj)->GetNumberField(TEXT("roll"));
+		}
+
+		// Parse translation (default: zero)
+		FVector Translation = FVector::ZeroVector;
+		if (const TSharedPtr<FJsonObject>* TransObj; Params->TryGetObjectField(TEXT("translation"), TransObj))
+		{
+			Translation.X = (*TransObj)->GetNumberField(TEXT("x"));
+			Translation.Y = (*TransObj)->GetNumberField(TEXT("y"));
+			Translation.Z = (*TransObj)->GetNumberField(TEXT("z"));
+		}
+
+		// Parse rotation_mode (default: additive)
+		FString RotModeStr = ExtractOptionalString(Params, TEXT("rotation_mode"), TEXT("additive"));
+		EBoneModificationMode RotMode = BMM_Additive;
+		if (RotModeStr == TEXT("replace")) RotMode = BMM_Replace;
+		else if (RotModeStr == TEXT("ignore")) RotMode = BMM_Ignore;
+
+		// Translation mode: additive if translation specified, else ignore
+		EBoneModificationMode TransMode = BMM_Ignore;
+		if (Params->HasField(TEXT("translation")))
+		{
+			FString TransModeStr = ExtractOptionalString(Params, TEXT("translation_mode"), TEXT("additive"));
+			if (TransModeStr == TEXT("replace")) TransMode = BMM_Replace;
+			else TransMode = BMM_Additive;
+		}
+
+		// Parse coordinate spaces (default: bone space)
+		auto ParseSpace = [](const FString& Str) -> EBoneControlSpace {
+			if (Str == TEXT("component")) return BCS_ComponentSpace;
+			if (Str == TEXT("parent")) return BCS_ParentBoneSpace;
+			if (Str == TEXT("world")) return BCS_WorldSpace;
+			return BCS_BoneSpace;
+		};
+
+		EBoneControlSpace RotSpace = ParseSpace(ExtractOptionalString(Params, TEXT("rotation_space"), TEXT("bone")));
+		EBoneControlSpace TransSpace = ParseSpace(ExtractOptionalString(Params, TEXT("translation_space"), TEXT("bone")));
+
+		CreatedNode = FAnimAssetNodeFactory::CreateModifyBoneNode(
+			TargetGraph, FName(*BoneName), Rotation, Translation,
+			RotMode, TransMode, RotSpace, TransSpace, Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_ModifyBone");
+	}
+	else if (AnimType == TEXT("control_rig"))
+	{
+		FString ControlRigPath = ExtractOptionalString(Params, TEXT("control_rig_class"));
+		if (ControlRigPath.IsEmpty())
+		{
+			return FMCPToolResult::Error(TEXT("control_rig_class parameter required for control_rig type"));
+		}
+
+		UClass* RigClass = LoadObject<UClass>(nullptr, *ControlRigPath);
+		if (!RigClass || !RigClass->IsChildOf(UControlRig::StaticClass()))
+		{
+			return FMCPToolResult::Error(FString::Printf(
+				TEXT("Invalid control_rig_class: '%s' — must be a UControlRig subclass"), *ControlRigPath));
+		}
+
+		CreatedNode = FAnimAssetNodeFactory::CreateControlRigNode(
+			TargetGraph, RigClass, Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_ControlRig");
+	}
+	else if (AnimType == TEXT("layered_blend_per_bone"))
+	{
+		FString BoneName = ExtractOptionalString(Params, TEXT("bone_name"));
+		if (BoneName.IsEmpty())
+		{
+			return FMCPToolResult::Error(TEXT("bone_name parameter required for layered_blend_per_bone"));
+		}
+		int32 BlendDepth = ExtractOptionalNumber<int32>(Params, TEXT("blend_depth"), 0);
+		bool bMeshSpaceRotationBlend = ExtractOptionalBool(Params, TEXT("mesh_space_rotation_blend"), false);
+
+		CreatedNode = FAnimAssetNodeFactory::CreateLayeredBoneBlendNode(
+			TargetGraph, FName(*BoneName), BlendDepth, bMeshSpaceRotationBlend,
+			Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_LayeredBoneBlend");
+	}
+	else if (AnimType == TEXT("two_bone_ik"))
+	{
+		FString BoneName = ExtractOptionalString(Params, TEXT("bone_name"));
+		if (BoneName.IsEmpty())
+		{
+			return FMCPToolResult::Error(TEXT("bone_name parameter required for two_bone_ik"));
+		}
+		FString EffectorBone = ExtractOptionalString(Params, TEXT("effector_bone"));
+		if (EffectorBone.IsEmpty())
+		{
+			return FMCPToolResult::Error(TEXT("effector_bone parameter required for two_bone_ik"));
+		}
+
+		EBoneControlSpace EffectorSpace = BCS_BoneSpace;
+		FString SpaceStr = ExtractOptionalString(Params, TEXT("effector_space"));
+		if (SpaceStr == TEXT("ComponentSpace")) EffectorSpace = BCS_ComponentSpace;
+		else if (SpaceStr == TEXT("WorldSpace")) EffectorSpace = BCS_WorldSpace;
+		else if (SpaceStr == TEXT("ParentBoneSpace")) EffectorSpace = BCS_ParentBoneSpace;
+
+		FString JointBone = ExtractOptionalString(Params, TEXT("joint_target_bone"));
+		bool bAllowStretching = ExtractOptionalBool(Params, TEXT("allow_stretching"), false);
+
+		CreatedNode = FAnimAssetNodeFactory::CreateTwoBoneIKNode(
+			TargetGraph, FName(*BoneName), FName(*EffectorBone),
+			EffectorSpace, FName(*JointBone), bAllowStretching,
+			Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_TwoBoneIK");
+	}
+	else if (AnimType == TEXT("aim_offset"))
+	{
+		UAimOffsetBlendSpace* AO = FAnimAssetManager::LoadAimOffset(AnimPath, Error);
+		if (!AO)
+		{
+			return FMCPToolResult::Error(Error);
+		}
+		if (!FAnimAssetManager::ValidateAnimationCompatibility(AnimBP, AO, Error))
+		{
+			return FMCPToolResult::Error(Error);
+		}
+		CreatedNode = FAnimAssetNodeFactory::CreateAimOffsetNode(
+			TargetGraph, AO, Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_RotationOffsetBlendSpace");
+	}
+	else if (AnimType == TEXT("local_to_component"))
+	{
+		CreatedNode = FAnimAssetNodeFactory::CreateLocalToComponentNode(
+			TargetGraph, Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_LocalToComponentSpace");
+	}
+	else if (AnimType == TEXT("component_to_local"))
+	{
+		CreatedNode = FAnimAssetNodeFactory::CreateComponentToLocalNode(
+			TargetGraph, Position, NodeId, Error);
+		NodeClass = TEXT("AnimGraphNode_ComponentToLocalSpace");
+	}
 	else
 	{
 		return FMCPToolResult::Error(FString::Printf(
-			TEXT("Unknown animation_type: '%s'. Expected: sequence, blendspace, blendspace1d, slot, inertialization, dead_blending"), *AnimType));
+			TEXT("Unknown animation_type: '%s'. Expected: sequence, blendspace, blendspace1d, slot, inertialization, dead_blending, copy_pose_from_mesh, modify_bone, two_bone_ik, control_rig, layered_blend_per_bone, aim_offset, local_to_component, component_to_local"), *AnimType));
 	}
 
 	if (!CreatedNode)

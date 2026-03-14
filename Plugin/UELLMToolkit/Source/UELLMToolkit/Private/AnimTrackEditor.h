@@ -22,12 +22,15 @@ public:
 	/**
 	 * Adjust a bone track across one or more animations (batch).
 	 * Adds LocationOffset to every position key, pre-multiplies RotationOffset into every rotation key.
+	 * ScaleOverride replaces scale on all keys (absolute, not additive).
 	 */
 	static TSharedPtr<FJsonObject> AdjustTrack(
 		const TArray<FString>& AssetPaths,
 		const FString& BoneName,
 		const FVector& LocationOffset,
 		const FRotator& RotationOffset,
+		const FVector& ScaleOverride,
+		bool bHasScaleOverride,
 		bool bSave);
 
 	/**
@@ -59,6 +62,19 @@ public:
 		const FString& SkeletonPath,
 		bool bSave);
 
+	/**
+	 * Extract a frame range from an animation into a new asset.
+	 * Duplicates the source, then trims tail and head to keep only [StartFrame, EndFrame].
+	 * EndFrame == -1 means last frame.
+	 */
+	static TSharedPtr<FJsonObject> ExtractRange(
+		const FString& AssetPath,
+		int32 StartFrame,
+		int32 EndFrame,
+		const FString& DestPath,
+		const FString& NewName,
+		bool bSave);
+
 	// ===== Curve Operations =====
 
 	static TSharedPtr<FJsonObject> GetCurves(const FString& AssetPath);
@@ -74,6 +90,8 @@ private:
 		const FName& BoneName,
 		const FVector& LocationOffset,
 		const FQuat& RotationOffsetQuat,
+		const FVector& ScaleOverride,
+		bool bHasScaleOverride,
 		bool bSave);
 
 	static TSharedPtr<FJsonObject> ResampleSingle(

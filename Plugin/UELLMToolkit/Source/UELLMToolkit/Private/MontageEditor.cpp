@@ -11,6 +11,7 @@
 #include "Dom/JsonValue.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "UObject/EnumProperty.h"
 #include "Misc/PackageName.h"
 #include "Factories/AnimMontageFactory.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -565,16 +566,23 @@ bool FMontageEditor::AddNotify(
 		Montage->AnimNotifyTracks.Add(NewTrack);
 	}
 
-	FAnimNotifyEvent NewNotify;
+	int32 NewNotifyIndex = Montage->Notifies.Add(FAnimNotifyEvent());
+	FAnimNotifyEvent& NewNotify = Montage->Notifies[NewNotifyIndex];
+
 	NewNotify.NotifyName = FName(*NotifyName);
-	NewNotify.SetTime(TriggerTime);
+	NewNotify.Guid = FGuid::NewGuid();
+	NewNotify.Link(Montage, TriggerTime);
+	NewNotify.TriggerTimeOffset = GetTriggerTimeOffsetForType(
+		Montage->CalculateOffsetForNotify(TriggerTime));
 	NewNotify.TrackIndex = TrackIndex;
+
 	if (NotifyInstance)
 	{
 		NewNotify.Notify = NotifyInstance;
+		NewNotify.TriggerWeightThreshold = NotifyInstance->GetDefaultTriggerWeightThreshold();
+		NotifyInstance->OnAnimNotifyCreatedInEditor(NewNotify);
 	}
 
-	Montage->Notifies.Add(NewNotify);
 	Montage->PostEditChange();
 	Montage->MarkPackageDirty();
 	return true;
@@ -621,17 +629,31 @@ bool FMontageEditor::AddNotifyState(
 		Montage->AnimNotifyTracks.Add(NewTrack);
 	}
 
-	FAnimNotifyEvent NewNotify;
+	int32 NewNotifyIndex = Montage->Notifies.Add(FAnimNotifyEvent());
+	FAnimNotifyEvent& NewNotify = Montage->Notifies[NewNotifyIndex];
+
 	NewNotify.NotifyName = FName(*NotifyStateName);
-	NewNotify.SetTime(StartTime);
-	NewNotify.SetDuration(Duration);
+	NewNotify.Guid = FGuid::NewGuid();
+	NewNotify.Link(Montage, StartTime);
+	NewNotify.TriggerTimeOffset = GetTriggerTimeOffsetForType(
+		Montage->CalculateOffsetForNotify(StartTime));
 	NewNotify.TrackIndex = TrackIndex;
+
 	if (StateInstance)
 	{
 		NewNotify.NotifyStateClass = StateInstance;
+		NewNotify.SetDuration(Duration);
+		NewNotify.EndLink.Link(Montage, NewNotify.EndLink.GetTime());
+		NewNotify.RefreshEndTriggerOffset(
+			Montage->CalculateOffsetForNotify(NewNotify.EndLink.GetTime()));
+		NewNotify.TriggerWeightThreshold = StateInstance->GetDefaultTriggerWeightThreshold();
+		StateInstance->OnAnimNotifyCreatedInEditor(NewNotify);
+	}
+	else
+	{
+		NewNotify.SetDuration(Duration);
 	}
 
-	Montage->Notifies.Add(NewNotify);
 	Montage->PostEditChange();
 	Montage->MarkPackageDirty();
 	return true;
@@ -701,6 +723,219 @@ bool FMontageEditor::MoveNotify(UAnimMontage* Montage, int32 NotifyIndex, int32 
 	return true;
 }
 
+bool FMontageEditor::SetNotifyProperties(UAnimMontage* Montage, int32 NotifyIndex,
+	const TSharedPtr<FJsonObject>& Properties, FString& OutError)
+{
+	if (!Montage)
+	{
+		OutError = TEXT("Montage is null");
+		return false;
+	}
+
+	if (NotifyIndex < 0 || NotifyIndex >= Montage->Notifies.Num())
+	{
+		OutError = FString::Printf(TEXT("Notify index %d out of range (0-%d)"),
+			NotifyIndex, Montage->Notifies.Num() - 1);
+		return false;
+	}
+
+	FAnimNotifyEvent& Notify = Montage->Notifies[NotifyIndex];
+	UObject* Target = Notify.NotifyStateClass
+		? static_cast<UObject*>(Notify.NotifyStateClass)
+		: static_cast<UObject*>(Notify.Notify);
+
+	if (!Target)
+	{
+		OutError = FString::Printf(TEXT("Notify at index %d has no UObject (untyped notify)"), NotifyIndex);
+		return false;
+	}
+
+	if (!SetPropertiesOnObject(Target, Properties, OutError))
+	{
+		return false;
+	}
+
+	Montage->PostEditChange();
+	Montage->MarkPackageDirty();
+	return true;
+}
+
+bool FMontageEditor::SetPropertiesOnObject(UObject* Object,
+	const TSharedPtr<FJsonObject>& Properties, FString& OutError)
+{
+	if (!Object || !Properties.IsValid())
+	{
+		OutError = TEXT("Null object or properties");
+		return false;
+	}
+
+	UClass* ObjClass = Object->GetClass();
+
+	for (const auto& Pair : Properties->Values)
+	{
+		const FString& Key = Pair.Key;
+		const TSharedPtr<FJsonValue>& Value = Pair.Value;
+
+		if (Key == TEXT("_class"))
+		{
+			continue;
+		}
+
+		FProperty* Prop = ObjClass->FindPropertyByName(FName(*Key));
+		if (!Prop)
+		{
+			OutError = FString::Printf(TEXT("Property '%s' not found on %s"), *Key, *ObjClass->GetName());
+			return false;
+		}
+
+		void* PropAddr = Prop->ContainerPtrToValuePtr<void>(Object);
+
+		if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+		{
+			bool bVal = false;
+			if (!Value->TryGetBool(bVal))
+			{
+				OutError = FString::Printf(TEXT("Property '%s' expects bool"), *Key);
+				return false;
+			}
+			BoolProp->SetPropertyValue(PropAddr, bVal);
+		}
+		else if (FNumericProperty* NumProp = CastField<FNumericProperty>(Prop))
+		{
+			double NumVal = 0.0;
+			if (!Value->TryGetNumber(NumVal))
+			{
+				OutError = FString::Printf(TEXT("Property '%s' expects number"), *Key);
+				return false;
+			}
+			if (NumProp->IsFloatingPoint())
+			{
+				NumProp->SetFloatingPointPropertyValue(PropAddr, NumVal);
+			}
+			else
+			{
+				NumProp->SetIntPropertyValue(PropAddr, static_cast<int64>(NumVal));
+			}
+		}
+		else if (FNameProperty* NameProp = CastField<FNameProperty>(Prop))
+		{
+			FString StrVal;
+			if (!Value->TryGetString(StrVal))
+			{
+				OutError = FString::Printf(TEXT("Property '%s' expects string"), *Key);
+				return false;
+			}
+			NameProp->SetPropertyValue(PropAddr, FName(*StrVal));
+		}
+		else if (FStrProperty* StrProp = CastField<FStrProperty>(Prop))
+		{
+			FString StrVal;
+			if (!Value->TryGetString(StrVal))
+			{
+				OutError = FString::Printf(TEXT("Property '%s' expects string"), *Key);
+				return false;
+			}
+			StrProp->SetPropertyValue(PropAddr, StrVal);
+		}
+		else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+		{
+			FString StrVal;
+			if (!Value->TryGetString(StrVal))
+			{
+				OutError = FString::Printf(TEXT("Property '%s' expects string (enum name)"), *Key);
+				return false;
+			}
+			UEnum* Enum = EnumProp->GetEnum();
+			int64 EnumVal = Enum->GetValueByNameString(StrVal);
+			if (EnumVal == INDEX_NONE)
+			{
+				OutError = FString::Printf(TEXT("Enum value '%s' not found in %s"), *StrVal, *Enum->GetName());
+				return false;
+			}
+			EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(PropAddr, EnumVal);
+		}
+		else if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+		{
+			if (ByteProp->Enum)
+			{
+				FString StrVal;
+				if (!Value->TryGetString(StrVal))
+				{
+					OutError = FString::Printf(TEXT("Property '%s' expects string (enum name)"), *Key);
+					return false;
+				}
+				int64 EnumVal = ByteProp->Enum->GetValueByNameString(StrVal);
+				if (EnumVal == INDEX_NONE)
+				{
+					OutError = FString::Printf(TEXT("Enum value '%s' not found in %s"), *StrVal, *ByteProp->Enum->GetName());
+					return false;
+				}
+				ByteProp->SetIntPropertyValue(PropAddr, EnumVal);
+			}
+			else
+			{
+				double NumVal = 0.0;
+				if (!Value->TryGetNumber(NumVal))
+				{
+					OutError = FString::Printf(TEXT("Property '%s' expects number"), *Key);
+					return false;
+				}
+				ByteProp->SetIntPropertyValue(PropAddr, static_cast<int64>(NumVal));
+			}
+		}
+		else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
+		{
+			const TSharedPtr<FJsonObject>* SubObj = nullptr;
+			if (!Value->TryGetObject(SubObj) || !SubObj || !SubObj->IsValid())
+			{
+				OutError = FString::Printf(TEXT("Property '%s' expects object with _class"), *Key);
+				return false;
+			}
+
+			FString ClassPath;
+			if (!(*SubObj)->TryGetStringField(TEXT("_class"), ClassPath))
+			{
+				OutError = FString::Printf(TEXT("Property '%s' object missing _class"), *Key);
+				return false;
+			}
+
+			UClass* SubClass = LoadClass<UObject>(nullptr, *ClassPath);
+			if (!SubClass)
+			{
+				SubClass = FindObject<UClass>(nullptr, *ClassPath);
+			}
+			if (!SubClass)
+			{
+				OutError = FString::Printf(TEXT("Failed to load class: %s"), *ClassPath);
+				return false;
+			}
+
+			if (!SubClass->IsChildOf(ObjProp->PropertyClass))
+			{
+				OutError = FString::Printf(TEXT("Class %s is not a subclass of %s"),
+					*SubClass->GetName(), *ObjProp->PropertyClass->GetName());
+				return false;
+			}
+
+			UObject* SubObject = NewObject<UObject>(Object, SubClass, NAME_None, RF_Transactional);
+			ObjProp->SetObjectPropertyValue(PropAddr, SubObject);
+
+			if (!SetPropertiesOnObject(SubObject, *SubObj, OutError))
+			{
+				return false;
+			}
+		}
+		else
+		{
+			OutError = FString::Printf(TEXT("Unsupported property type '%s' for '%s'"),
+				*Prop->GetCPPType(), *Key);
+			return false;
+		}
+	}
+
+	return true;
+}
+
 bool FMontageEditor::RenameNotifyTrack(UAnimMontage* Montage, int32 TrackIndex, const FString& NewTrackName, FString& OutError)
 {
 	if (!Montage)
@@ -718,6 +953,32 @@ bool FMontageEditor::RenameNotifyTrack(UAnimMontage* Montage, int32 TrackIndex, 
 	Montage->AnimNotifyTracks[TrackIndex].TrackName = FName(*NewTrackName);
 	Montage->MarkPackageDirty();
 	return true;
+}
+
+int32 FMontageEditor::CleanupNotifyTracks(UAnimMontage* Montage)
+{
+	if (!Montage) return 0;
+
+	int32 MaxUsedTrack = -1;
+	for (const FAnimNotifyEvent& Notify : Montage->Notifies)
+	{
+		if (Notify.TrackIndex > MaxUsedTrack)
+		{
+			MaxUsedTrack = Notify.TrackIndex;
+		}
+	}
+
+	int32 DesiredCount = MaxUsedTrack + 1;
+	if (DesiredCount < 1) DesiredCount = 1;
+
+	int32 OldCount = Montage->AnimNotifyTracks.Num();
+	if (OldCount <= DesiredCount) return 0;
+
+	int32 Removed = OldCount - DesiredCount;
+	Montage->AnimNotifyTracks.SetNum(DesiredCount);
+	Montage->PostEditChange();
+	Montage->MarkPackageDirty();
+	return Removed;
 }
 
 bool FMontageEditor::SetBlendIn(UAnimMontage* Montage, float BlendTime, const FString& BlendOption, FString& OutError)

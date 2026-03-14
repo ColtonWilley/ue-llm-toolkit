@@ -20,7 +20,7 @@
  * - Flow: Branch, Sequence
  * - Functions: CallFunction, PrintString
  * - Variables: VariableGet, VariableSet
- * - Events: Event (BeginPlay, Tick, EndPlay)
+ * - Events: Event (BeginPlay, Tick, EndPlay), EnhancedInputAction
  * - Math: Add, Subtract, Multiply, Divide
  *
  * Node ID System:
@@ -57,6 +57,7 @@ public:
 	 * - "CallFunction" - params: { function, target_class }
 	 * - "Branch" / "IfThenElse"
 	 * - "Event" - params: { event: "BeginPlay"|"Tick"|"EndPlay" }
+	 * - "EnhancedInputAction" - params: { action_path: "/Game/.../IA_Look" }
 	 * - "VariableGet" / "VariableSet" - params: { variable }
 	 * - "Sequence" - params: { num_outputs }
 	 * - "PrintString"
@@ -222,6 +223,9 @@ private:
 	static UEdGraphNode* CreateVariableSetNode(UEdGraph* Graph, UBlueprint* Blueprint, const FString& VariableName, int32 PosX, int32 PosY, FString& OutError);
 	static UEdGraphNode* CreateSequenceNode(UEdGraph* Graph, int32 NumOutputs, int32 PosX, int32 PosY, FString& OutError);
 	static UEdGraphNode* CreateMathNode(UEdGraph* Graph, const FString& MathOp, int32 PosX, int32 PosY, FString& OutError);
+
+	// Enhanced Input node creation
+	static UEdGraphNode* CreateEnhancedInputActionNode(UEdGraph* Graph, const FString& ActionPath, int32 PosX, int32 PosY, FString& OutError);
 
 	// AnimGraph node creation helpers
 	static UEdGraphNode* CreateModifyBoneNode(UEdGraph* Graph, const FString& BoneName, const TSharedPtr<FJsonObject>& Params, int32 PosX, int32 PosY, FString& OutError);

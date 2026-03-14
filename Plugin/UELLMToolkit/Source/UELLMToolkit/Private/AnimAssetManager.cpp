@@ -9,6 +9,7 @@
 #include "Animation/BlendSpace.h"
 #include "Animation/BlendSpace1D.h"
 #include "Animation/AnimMontage.h"
+#include "Animation/AimOffsetBlendSpace.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EdGraph/EdGraph.h"
@@ -40,6 +41,11 @@ UAnimMontage* FAnimAssetManager::LoadMontage(const FString& AssetPath, FString& 
 UAnimationAsset* FAnimAssetManager::LoadAnimationAsset(const FString& AssetPath, FString& OutError)
 {
 	return LoadAnimAssetInternal<UAnimationAsset>(AssetPath, TEXT("AnimationAsset"), OutError);
+}
+
+UAimOffsetBlendSpace* FAnimAssetManager::LoadAimOffset(const FString& AssetPath, FString& OutError)
+{
+	return LoadAnimAssetInternal<UAimOffsetBlendSpace>(AssetPath, TEXT("AimOffsetBlendSpace"), OutError);
 }
 
 // ===== Asset Validation =====

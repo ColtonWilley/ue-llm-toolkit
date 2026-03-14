@@ -21,7 +21,8 @@ public:
 
 	static TSharedPtr<FJsonObject> GetCDOOverrides(UObject* CDO, UObject* ParentCDO, bool bEditableOnly = true);
 
+	static bool ShouldSkipProperty(FProperty* Property);
+
 private:
 	static TSharedPtr<FJsonValue> StructToJsonValue(FStructProperty* StructProp, const void* ValuePtr);
-	static bool ShouldSkipProperty(FProperty* Property);
 };

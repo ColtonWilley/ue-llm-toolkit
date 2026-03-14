@@ -146,9 +146,14 @@ FMCPToolResult FMCPTool_BlendSpace::HandleCreate(const TSharedRef<FJsonObject>& 
 	}
 
 	FString TypeStr = ExtractOptionalString(Params, TEXT("type"), TEXT("BlendSpace1D"));
-	bool bIs1D = !TypeStr.Equals(TEXT("BlendSpace"), ESearchCase::IgnoreCase);
+	bool bIsAimOffset = TypeStr.Contains(TEXT("AimOffset"), ESearchCase::IgnoreCase);
+	bool bIs1D = TypeStr.Contains(TEXT("1D"), ESearchCase::IgnoreCase);
+	if (!bIsAimOffset && TypeStr.Equals(TEXT("BlendSpace"), ESearchCase::IgnoreCase))
+	{
+		bIs1D = false;
+	}
 
-	TSharedPtr<FJsonObject> Result = FBlendSpaceEditor::CreateBlendSpace(PackagePath, Name, SkeletonPath, bIs1D);
+	TSharedPtr<FJsonObject> Result = FBlendSpaceEditor::CreateBlendSpace(PackagePath, Name, SkeletonPath, bIs1D, bIsAimOffset);
 	return BlendSpaceJsonToToolResult(Result, TEXT("Blend space created"));
 }
 

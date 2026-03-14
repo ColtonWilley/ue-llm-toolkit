@@ -21,9 +21,9 @@ class FBlendSpaceEditor
 public:
 	// ===== Individual Operations (include ResampleData) =====
 
-	/** Create a new BlendSpace or BlendSpace1D asset. */
+	/** Create a new BlendSpace, BlendSpace1D, AimOffsetBlendSpace, or AimOffsetBlendSpace1D asset. */
 	static TSharedPtr<FJsonObject> CreateBlendSpace(const FString& PackagePath, const FString& Name,
-		const FString& SkeletonPath, bool bIs1D = true);
+		const FString& SkeletonPath, bool bIs1D = true, bool bIsAimOffset = false);
 
 	/** Add an animation sample at a position. Auto-expands axis range. RateScale < 0 = don't touch. */
 	static TSharedPtr<FJsonObject> AddSample(UBlendSpace* BS, const FString& AnimPath, float X, float Y, float RateScale = -1.f);

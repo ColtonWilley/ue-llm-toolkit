@@ -82,9 +82,15 @@ public:
 	static bool RemoveNotify(UAnimMontage* Montage, const FString& NotifyName, FString& OutError);
 	static bool MoveNotify(UAnimMontage* Montage, int32 NotifyIndex, int32 NewTrackIndex, FString& OutError);
 
+	static bool SetNotifyProperties(UAnimMontage* Montage, int32 NotifyIndex,
+		const TSharedPtr<FJsonObject>& Properties, FString& OutError);
+	static bool SetPropertiesOnObject(UObject* Object,
+		const TSharedPtr<FJsonObject>& Properties, FString& OutError);
+
 	// ===== Track Operations =====
 
 	static bool RenameNotifyTrack(UAnimMontage* Montage, int32 TrackIndex, const FString& NewTrackName, FString& OutError);
+	static int32 CleanupNotifyTracks(UAnimMontage* Montage);
 
 	// ===== Blend Settings =====
 

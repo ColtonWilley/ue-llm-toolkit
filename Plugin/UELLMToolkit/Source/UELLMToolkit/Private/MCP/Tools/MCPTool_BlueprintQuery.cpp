@@ -325,6 +325,21 @@ FMCPToolResult FMCPTool_BlueprintQuery::ExecuteGetComponents(const TSharedRef<FJ
 		return FMCPToolResult::Error(LoadError);
 	}
 
+	FString ComponentNameFilter = ExtractOptionalString(Params, TEXT("component_name"));
+
+	if (!ComponentNameFilter.IsEmpty())
+	{
+		TSharedPtr<FJsonObject> Result = FComponentInspector::SerializeSingleComponent(Blueprint, ComponentNameFilter);
+		if (Result->HasField(TEXT("error")))
+		{
+			return FMCPToolResult::Error(Result->GetStringField(TEXT("error")));
+		}
+		return FMCPToolResult::Success(
+			FString::Printf(TEXT("Component '%s' on %s"), *ComponentNameFilter, *Blueprint->GetName()),
+			Result
+		);
+	}
+
 	TSharedPtr<FJsonObject> ComponentData = FComponentInspector::SerializeComponentTree(Blueprint);
 
 	return FMCPToolResult::Success(

@@ -35,6 +35,15 @@ public:
 	/** List skeleton assets in a content folder. */
 	static TSharedPtr<FJsonObject> ListSkeletons(const FString& FolderPath);
 
+	/** Add a bone to a skeleton's reference skeleton. */
+	static TSharedPtr<FJsonObject> AddBoneToSkeleton(const FString& SkeletonPath,
+		const FString& BoneName, const FString& ParentBoneName,
+		const FVector& Position, const FQuat& Rotation);
+
+	/** Copy bone tracks from source animation to target animation. */
+	static TSharedPtr<FJsonObject> CopyBoneTracks(const FString& SourceAnimPath,
+		const FString& TargetAnimPath, const TArray<FString>& BoneNames);
+
 	// ===== IK Rig =====
 
 	/** Inspect an IK Rig: chains, retarget root, mesh, goals/solvers (warns if present). */

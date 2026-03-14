@@ -2,6 +2,7 @@
 
 #include "PIESequenceRunner.h"
 #include "PIEFrameGrabber.h"
+#include "SequencerController.h"
 #include "UnrealClaudeModule.h"
 #include "Editor.h"
 #include "PlayInEditorDataTypes.h"
@@ -132,6 +133,7 @@ void FPIESequenceRunner::OnPIEEnded(bool bIsSimulating)
 
 	StopAllHolds();
 	StopAllTapes();
+	MaxDurationTimerHandle.Invalidate();
 
 	if (FrameGrabber.IsValid())
 	{
@@ -246,7 +248,10 @@ void FPIESequenceRunner::StartRunSequence(
 	int32 InSettleMs,
 	const FString& InOutputDir,
 	const TMap<FString, TWeakObjectPtr<UInputAction>>& InPreLoadedActions,
-	int32 InAutoCapEveryNFrames)
+	int32 InAutoCapEveryNFrames,
+	int32 InMaxDurationMs,
+	bool bInTakeRecord,
+	const FString& InTakeSlate)
 {
 	if (IsRunning())
 	{
@@ -258,6 +263,7 @@ void FPIESequenceRunner::StartRunSequence(
 	OutputDir = InOutputDir;
 	PreLoadedActions = InPreLoadedActions;
 	AutoCaptureEveryNFrames = FMath::Max(0, InAutoCapEveryNFrames);
+	MaxDurationMs = FMath::Max(0, InMaxDurationMs);
 	CaptureMode = TEXT("none");
 	CaptureIntervalMs = 0;
 	CaptureEveryNFrames = 0;
@@ -275,6 +281,9 @@ void FPIESequenceRunner::StartRunSequence(
 	DiagLog.Empty();
 	StartTime = FPlatformTime::Seconds();
 	EndTime = 0.0;
+	bTakeRecord = bInTakeRecord;
+	TakeSlate = InTakeSlate;
+	TakeSequencePath.Empty();
 
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	if (!PlatformFile.DirectoryExists(*OutputDir))
@@ -348,6 +357,10 @@ void FPIESequenceRunner::Cancel()
 		if (CompletionCheckHandle.IsValid())
 		{
 			TimerMgr->ClearTimer(CompletionCheckHandle);
+		}
+		if (MaxDurationTimerHandle.IsValid())
+		{
+			TimerMgr->ClearTimer(MaxDurationTimerHandle);
 		}
 		for (FTimerHandle& Handle : ScheduledStepHandles)
 		{
@@ -463,6 +476,21 @@ void FPIESequenceRunner::BeginSettle()
 	LogPlayerState(TEXT("PIE_READY"));
 	AddDiagEntry(FString::Printf(TEXT("pie_ready settle=%dms"), SettleMs));
 
+	if (bTakeRecord)
+	{
+		FString TakeError;
+		if (FSequencerController::StartTakeRecordingForPIE(GetPIEWorld(), TakeSlate, TakeError))
+		{
+			AddDiagEntry(TEXT("take_recorder_started"));
+			UE_LOG(LogUnrealClaude, Log, TEXT("PIESequenceRunner: Take Recorder started (during settle)"));
+		}
+		else
+		{
+			UE_LOG(LogUnrealClaude, Warning, TEXT("PIESequenceRunner: Failed to start Take Recorder: %s"), *TakeError);
+			AddDiagEntry(FString::Printf(TEXT("take_recorder_start_failed: %s"), *TakeError));
+		}
+	}
+
 	if (SettleMs <= 0)
 	{
 		OnSettleComplete();
@@ -516,6 +544,18 @@ void FPIESequenceRunner::OnSettleComplete()
 	}
 
 	ScheduleAllSteps();
+
+	if (MaxDurationMs > 0)
+	{
+		FTimerManager* TM = GetPIETimerManager();
+		if (TM)
+		{
+			TM->SetTimer(MaxDurationTimerHandle,
+				FTimerDelegate::CreateSP(AsShared(), &FPIESequenceRunner::OnMaxDurationTimeout),
+				MaxDurationMs / 1000.f, false);
+			AddDiagEntry(FString::Printf(TEXT("safety_timeout_armed %dms"), MaxDurationMs));
+		}
+	}
 }
 
 void FPIESequenceRunner::ScheduleAllSteps()
@@ -963,11 +1003,34 @@ void FPIESequenceRunner::OnSequenceComplete()
 	StopAllHolds();
 	StopAllTapes();
 
+	FTimerManager* TimerMgr = GetPIETimerManager();
+	if (TimerMgr && MaxDurationTimerHandle.IsValid())
+	{
+		TimerMgr->ClearTimer(MaxDurationTimerHandle);
+	}
+
 	if (FrameGrabber.IsValid())
 	{
 		FrameGrabber->StopCapture();
 		CapturedFiles = FrameGrabber->GetCapturedFilePaths();
 		FrameGrabber.Reset();
+	}
+
+	if (bTakeRecord)
+	{
+		FString TakeError;
+		FString TakePath;
+		if (FSequencerController::StopTakeRecordingForPIE(TakePath, TakeError))
+		{
+			TakeSequencePath = TakePath;
+			AddDiagEntry(FString::Printf(TEXT("take_recorder_stopped: %s"), *TakePath));
+			UE_LOG(LogUnrealClaude, Log, TEXT("PIESequenceRunner: Take Recorder stopped, sequence: %s"), *TakePath);
+		}
+		else
+		{
+			UE_LOG(LogUnrealClaude, Warning, TEXT("PIESequenceRunner: Failed to stop Take Recorder: %s"), *TakeError);
+			AddDiagEntry(FString::Printf(TEXT("take_recorder_stop_failed: %s"), *TakeError));
+		}
 	}
 
 	State = EPIESequenceState::Completed;
@@ -1031,6 +1094,21 @@ void FPIESequenceRunner::OnSequenceFailed(const FString& Error)
 	}
 }
 
+void FPIESequenceRunner::OnMaxDurationTimeout()
+{
+	if (!IsRunning())
+	{
+		return;
+	}
+
+	UE_LOG(LogUnrealClaude, Warning, TEXT("PIESequenceRunner: Safety timeout reached (%dms) — force-stopping sequence at step %d/%d"),
+		MaxDurationMs, StepsCompleted, Steps.Num());
+	AddDiagEntry(FString::Printf(TEXT("safety_timeout_fired %dms step=%d/%d"), MaxDurationMs, StepsCompleted, Steps.Num()));
+
+	OnSequenceFailed(FString::Printf(TEXT("Safety timeout: sequence exceeded max_duration_ms=%d (completed %d/%d steps)"),
+		MaxDurationMs, StepsCompleted, Steps.Num()));
+}
+
 void FPIESequenceRunner::WriteManifest()
 {
 	TSharedPtr<FJsonObject> Manifest = MakeShared<FJsonObject>();
@@ -1054,6 +1132,11 @@ void FPIESequenceRunner::WriteManifest()
 		CapturesArray.Add(MakeShared<FJsonValueObject>(CaptureObj));
 	}
 	Manifest->SetArrayField(TEXT("captures"), CapturesArray);
+
+	if (!TakeSequencePath.IsEmpty())
+	{
+		Manifest->SetStringField(TEXT("take_sequence_path"), TakeSequencePath);
+	}
 
 	if (CapturedFiles.Num() > 0)
 	{
@@ -1206,6 +1289,15 @@ void FPIESequenceRunner::OnEndFrameTick()
 	UEnhancedInputLocalPlayerSubsystem* InputSubsystem =
 		PC->GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
 	if (!InputSubsystem) return;
+
+	if (APawn* Pawn = PC->GetPawn())
+	{
+		FVector Loc = Pawn->GetActorLocation();
+		FRotator Rot = Pawn->GetActorRotation();
+		FRotator CtrlRot = PC->GetControlRotation();
+		UE_LOG(LogUnrealClaude, Log, TEXT("[REPLAY-POS] frame=%llu loc=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f) ctrl=(%.2f,%.2f,%.2f)"),
+			GFrameNumber, Loc.X, Loc.Y, Loc.Z, Rot.Pitch, Rot.Yaw, Rot.Roll, CtrlRot.Pitch, CtrlRot.Yaw, CtrlRot.Roll);
+	}
 
 	for (int32 i = ActiveTapes.Num() - 1; i >= 0; --i)
 	{

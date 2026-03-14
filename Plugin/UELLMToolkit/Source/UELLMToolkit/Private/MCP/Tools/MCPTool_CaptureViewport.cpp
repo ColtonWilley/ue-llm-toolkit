@@ -13,6 +13,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "SEditorViewport.h"
 #include "PersonaTabs.h"
+#include "BlueprintEditorTabs.h"
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Animation/AnimSequenceBase.h"
@@ -280,6 +281,10 @@ FMCPToolResult FMCPTool_CaptureViewport::Execute(const TSharedRef<FJsonObject>& 
 		}
 
 		TSharedPtr<SDockTab> ViewportTab = TabManager->FindExistingLiveTab(FPersonaTabs::PreviewViewportID);
+		if (!ViewportTab.IsValid())
+		{
+			ViewportTab = TabManager->FindExistingLiveTab(FBlueprintEditorTabs::SCSViewportID);
+		}
 		if (!ViewportTab.IsValid())
 		{
 			return FMCPToolResult::Error(FString::Printf(

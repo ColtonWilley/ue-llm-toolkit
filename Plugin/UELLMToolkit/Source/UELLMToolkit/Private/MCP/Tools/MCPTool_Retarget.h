@@ -12,6 +12,7 @@
  *   - inspect_skeleton: Bone hierarchy from skeleton or skeletal mesh path
  *   - inspect_ref_pose: Per-bone position + rotation (euler + quat) from skeletal mesh bind pose
  *   - list_skeletons: Find skeleton assets in a folder
+ *   - add_bone: Add a bone to a skeleton (name, parent, position, rotation)
  *
  * IK Rig:
  *   - inspect_ik_rig: Chains, retarget root, mesh, goals/solvers
@@ -55,7 +56,9 @@ public:
 			"Skeleton:\n"
 			"- 'inspect_skeleton': Bone hierarchy from skeleton or skeletal mesh path\n"
 			"- 'inspect_ref_pose': Per-bone position + rotation (euler + quat) from skeletal mesh bind pose (asset_path = skeletal mesh)\n"
-			"- 'list_skeletons': Find skeleton assets in a folder\n\n"
+			"- 'list_skeletons': Find skeleton assets in a folder\n"
+			"- 'add_bone': Add a bone to a skeleton (skeleton_path, bone_name, parent_bone, position {x,y,z}, rotation {x,y,z,w} quat)\n"
+			"- 'copy_bone_tracks': Copy bone animation tracks from source to target anim (source_anim_path, target_anim_path, bone_names[])\n\n"
 			"IK Rig:\n"
 			"- 'inspect_ik_rig': Chains, retarget root, mesh, goals/solvers\n"
 			"- 'create_ik_rig': Create new IK rig with mesh, root, and chains\n"
@@ -97,6 +100,10 @@ public:
 			FMCPToolParameter(TEXT("retarget_root"), TEXT("string"), TEXT("Retarget root bone name")),
 			// Chains
 			FMCPToolParameter(TEXT("chains"), TEXT("array"), TEXT("Array of {name, start_bone, end_bone} for create_ik_rig")),
+			FMCPToolParameter(TEXT("bone_name"), TEXT("string"), TEXT("Bone name for add_bone")),
+			FMCPToolParameter(TEXT("parent_bone"), TEXT("string"), TEXT("Parent bone name for add_bone")),
+			FMCPToolParameter(TEXT("position"), TEXT("object"), TEXT("{x,y,z} local position for add_bone")),
+			FMCPToolParameter(TEXT("rotation"), TEXT("object"), TEXT("{x,y,z,w} quaternion rotation for add_bone")),
 			FMCPToolParameter(TEXT("chain_name"), TEXT("string"), TEXT("Chain name for add/remove")),
 			FMCPToolParameter(TEXT("start_bone"), TEXT("string"), TEXT("Start bone for chain")),
 			FMCPToolParameter(TEXT("end_bone"), TEXT("string"), TEXT("End bone for chain")),
@@ -148,6 +155,8 @@ private:
 	FMCPToolResult HandleInspectSkeleton(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleInspectRefPose(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleListSkeletons(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult HandleAddBone(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult HandleCopyBoneTracks(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleInspectIKRig(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleCreateIKRig(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult HandleAddChain(const TSharedRef<FJsonObject>& Params);

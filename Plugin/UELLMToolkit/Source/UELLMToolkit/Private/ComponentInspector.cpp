@@ -2,6 +2,7 @@
 
 #include "ComponentInspector.h"
 #include "UnrealClaudeUtils.h"
+#include "PropertySerializer.h"
 
 #include "Engine/Blueprint.h"
 #include "Engine/SimpleConstructionScript.h"
@@ -23,6 +24,7 @@
 #include "Camera/CameraComponent.h"
 #include "PhysicsEngine/BodyInstance.h"
 #include "Engine/CollisionProfile.h"
+#include "UObject/UnrealType.h"
 
 // ============================================================================
 // Component Tree
@@ -52,7 +54,7 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeComponentTree(UBlueprint* 
 		return Result;
 	}
 
-	// Collect SCS variable names for origin tagging (blueprint-added vs C++ constructor)
+	// Collect SCS variable names for origin tagging
 	TSet<FName> SCSVarNames;
 	if (Blueprint->SimpleConstructionScript)
 	{
@@ -62,7 +64,7 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeComponentTree(UBlueprint* 
 		}
 	}
 
-	// Always walk CDO — this sees ALL components (C++ constructor + Blueprint-added)
+	// Walk CDO for native (C++ constructor) components
 	AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject());
 	if (!CDO)
 	{
@@ -74,7 +76,14 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeComponentTree(UBlueprint* 
 	TInlineComponentArray<UActorComponent*> AllComponents;
 	CDO->GetComponents(AllComponents);
 
-	// Separate scene vs non-scene components
+	// Track which component names the CDO already has
+	TSet<FName> CDOComponentNames;
+	for (UActorComponent* Comp : AllComponents)
+	{
+		CDOComponentNames.Add(Comp->GetFName());
+	}
+
+	// Separate scene vs non-scene from CDO
 	USceneComponent* RootComp = CDO->GetRootComponent();
 	TArray<USceneComponent*> SceneComponents;
 	TArray<UActorComponent*> NonSceneComponents;
@@ -90,8 +99,7 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeComponentTree(UBlueprint* 
 		}
 	}
 
-	// CDOs don't populate AttachChildren, so GetChildrenComponents() returns empty.
-	// Build the parent-child map manually from GetAttachParent() pointers.
+	// CDOs don't populate AttachChildren — build parent-child map from GetAttachParent()
 	TMap<USceneComponent*, TArray<USceneComponent*>> ChildrenMap;
 	for (USceneComponent* Comp : SceneComponents)
 	{
@@ -100,13 +108,13 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeComponentTree(UBlueprint* 
 			USceneComponent* Parent = Comp->GetAttachParent();
 			if (!Parent)
 			{
-				Parent = RootComp; // Orphans attach to root
+				Parent = RootComp;
 			}
 			ChildrenMap.FindOrAdd(Parent).Add(Comp);
 		}
 	}
 
-	// Build scene component tree from root
+	// Build native scene component tree
 	TArray<TSharedPtr<FJsonValue>> ComponentArray;
 	if (RootComp)
 	{
@@ -114,7 +122,7 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeComponentTree(UBlueprint* 
 			SerializeSceneComponentNode(RootComp, SCSVarNames, ChildrenMap)));
 	}
 
-	// Collect non-scene components (CharacterMovement, AttributeComponent, etc.)
+	// Non-scene components from CDO
 	TArray<TSharedPtr<FJsonValue>> NonSceneArray;
 	for (UActorComponent* Comp : NonSceneComponents)
 	{
@@ -133,7 +141,70 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeComponentTree(UBlueprint* 
 		NonSceneArray.Add(MakeShared<FJsonValueObject>(CompJson));
 	}
 
-	Result->SetNumberField(TEXT("total_components"), AllComponents.Num());
+	// ----------------------------------------------------------------
+	// SCS pass: inject BP-added components not already in CDO
+	// ----------------------------------------------------------------
+	int32 SCSInjectedCount = 0;
+	if (Blueprint->SimpleConstructionScript)
+	{
+		USimpleConstructionScript* SCS = Blueprint->SimpleConstructionScript;
+
+		for (USCS_Node* RootNode : SCS->GetRootNodes())
+		{
+			if (!RootNode || CDOComponentNames.Contains(RootNode->GetVariableName()))
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> SCSJson = SerializeSCSNodeForTree(RootNode, CDOComponentNames, SCSInjectedCount);
+
+			// Find the native parent component to inject under
+			FString ParentName;
+			if (RootNode->bIsParentComponentNative)
+			{
+				ParentName = RootNode->ParentComponentOrVariableName.ToString();
+			}
+
+			if (!ParentName.IsEmpty())
+			{
+				InjectIntoJsonTree(ComponentArray, ParentName, SCSJson);
+			}
+			else
+			{
+				ComponentArray.Add(MakeShared<FJsonValueObject>(SCSJson));
+			}
+		}
+
+		// Also check for SCS non-scene components not in CDO
+		for (USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (!Node || CDOComponentNames.Contains(Node->GetVariableName()))
+			{
+				continue;
+			}
+			if (!Node->ComponentTemplate || Node->ComponentTemplate->IsA<USceneComponent>())
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> CompJson = MakeShared<FJsonObject>();
+			CompJson->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+			CompJson->SetStringField(TEXT("class"), Node->ComponentTemplate->GetClass()->GetName());
+			CompJson->SetStringField(TEXT("origin"), TEXT("blueprint"));
+
+			TSharedPtr<FJsonObject> Props = GetComponentProperties(Node->ComponentTemplate);
+			if (Props.IsValid() && Props->Values.Num() > 0)
+			{
+				CompJson->SetObjectField(TEXT("properties"), Props);
+			}
+
+			NonSceneArray.Add(MakeShared<FJsonValueObject>(CompJson));
+			SCSInjectedCount++;
+		}
+	}
+
+	int32 TotalCount = AllComponents.Num() + SCSInjectedCount;
+	Result->SetNumberField(TEXT("total_components"), TotalCount);
 	Result->SetArrayField(TEXT("components"), ComponentArray);
 	if (NonSceneArray.Num() > 0)
 	{
@@ -247,6 +318,106 @@ TSharedPtr<FJsonObject> FComponentInspector::SerializeSceneComponentNode(
 }
 
 // ============================================================================
+// SCS Tree Helpers
+// ============================================================================
+
+TSharedPtr<FJsonObject> FComponentInspector::SerializeSCSNodeForTree(
+	USCS_Node* Node,
+	const TSet<FName>& CDOComponentNames,
+	int32& OutInjectedCount)
+{
+	TSharedPtr<FJsonObject> NodeJson = MakeShared<FJsonObject>();
+
+	if (!Node)
+	{
+		return NodeJson;
+	}
+
+	NodeJson->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+
+	if (Node->ComponentTemplate)
+	{
+		NodeJson->SetStringField(TEXT("class"), Node->ComponentTemplate->GetClass()->GetName());
+	}
+	else if (Node->ComponentClass)
+	{
+		NodeJson->SetStringField(TEXT("class"), Node->ComponentClass->GetName());
+	}
+
+	NodeJson->SetStringField(TEXT("origin"), TEXT("blueprint"));
+
+	if (Node->ComponentTemplate)
+	{
+		TSharedPtr<FJsonObject> Props = GetComponentProperties(Node->ComponentTemplate);
+		if (Props.IsValid() && Props->Values.Num() > 0)
+		{
+			NodeJson->SetObjectField(TEXT("properties"), Props);
+		}
+	}
+
+	OutInjectedCount++;
+
+	if (Node->ChildNodes.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> Children;
+		for (USCS_Node* Child : Node->ChildNodes)
+		{
+			if (Child && !CDOComponentNames.Contains(Child->GetVariableName()))
+			{
+				Children.Add(MakeShared<FJsonValueObject>(
+					SerializeSCSNodeForTree(Child, CDOComponentNames, OutInjectedCount)));
+			}
+		}
+		if (Children.Num() > 0)
+		{
+			NodeJson->SetArrayField(TEXT("children"), Children);
+		}
+	}
+
+	return NodeJson;
+}
+
+bool FComponentInspector::InjectIntoJsonTree(
+	TArray<TSharedPtr<FJsonValue>>& Tree,
+	const FString& ParentName,
+	TSharedPtr<FJsonObject> NodeToInject)
+{
+	for (TSharedPtr<FJsonValue>& Entry : Tree)
+	{
+		TSharedPtr<FJsonObject> Obj = Entry->AsObject();
+		if (!Obj.IsValid())
+		{
+			continue;
+		}
+
+		FString Name;
+		if (Obj->TryGetStringField(TEXT("name"), Name) && Name == ParentName)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ExistingChildren = nullptr;
+			TArray<TSharedPtr<FJsonValue>> ChildArray;
+			if (Obj->TryGetArrayField(TEXT("children"), ExistingChildren))
+			{
+				ChildArray = *ExistingChildren;
+			}
+			ChildArray.Add(MakeShared<FJsonValueObject>(NodeToInject));
+			Obj->SetArrayField(TEXT("children"), ChildArray);
+			return true;
+		}
+
+		if (Obj->HasField(TEXT("children")))
+		{
+			TArray<TSharedPtr<FJsonValue>> ChildArray = Obj->GetArrayField(TEXT("children"));
+			if (InjectIntoJsonTree(ChildArray, ParentName, NodeToInject))
+			{
+				Obj->SetArrayField(TEXT("children"), ChildArray);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// ============================================================================
 // Component Properties
 // ============================================================================
 
@@ -259,165 +430,181 @@ TSharedPtr<FJsonObject> FComponentInspector::GetComponentProperties(UActorCompon
 		return Props;
 	}
 
-	// --- SceneComponent properties ---
-	if (USceneComponent* SceneComp = Cast<USceneComponent>(Component))
+	UClass* CompClass = Component->GetClass();
+
+	UActorComponent* DefaultComp = NewObject<UActorComponent>(
+		GetTransientPackage(), CompClass, NAME_None, RF_Transient);
+	if (!DefaultComp)
 	{
-		FVector Loc = SceneComp->GetRelativeLocation();
-		if (!Loc.IsNearlyZero())
+		return Props;
+	}
+
+	for (TFieldIterator<FProperty> It(CompClass); It; ++It)
+	{
+		FProperty* Property = *It;
+
+		if (FPropertySerializer::ShouldSkipProperty(Property))
 		{
-			Props->SetObjectField(TEXT("relative_location"), UnrealClaudeJsonUtils::VectorToJson(Loc));
+			continue;
 		}
 
-		FRotator Rot = SceneComp->GetRelativeRotation();
-		if (!Rot.IsNearlyZero())
+		const void* CompValuePtr = Property->ContainerPtrToValuePtr<void>(Component);
+		const void* DefaultValuePtr = Property->ContainerPtrToValuePtr<void>(DefaultComp);
+
+		if (Property->Identical(CompValuePtr, DefaultValuePtr))
 		{
-			Props->SetObjectField(TEXT("relative_rotation"), UnrealClaudeJsonUtils::RotatorToJson(Rot));
+			continue;
 		}
 
-		FVector Scale = SceneComp->GetRelativeScale3D();
-		if (!Scale.Equals(FVector::OneVector))
+		TSharedPtr<FJsonValue> JsonVal = FPropertySerializer::PropertyToJsonValue(Property, CompValuePtr);
+		if (JsonVal.IsValid())
 		{
-			Props->SetObjectField(TEXT("relative_scale3d"), UnrealClaudeJsonUtils::VectorToJson(Scale));
-		}
-
-		if (!SceneComp->IsVisible())
-		{
-			Props->SetBoolField(TEXT("is_visible"), false);
-		}
-
-		if (SceneComp->Mobility != EComponentMobility::Movable)
-		{
-			Props->SetStringField(TEXT("mobility"),
-				SceneComp->Mobility == EComponentMobility::Static ? TEXT("Static") : TEXT("Stationary"));
+			Props->SetField(Property->GetName(), JsonVal);
 		}
 	}
 
-	// --- PrimitiveComponent properties ---
-	if (UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
-	{
-		if (PrimComp->IsSimulatingPhysics())
-		{
-			Props->SetBoolField(TEXT("simulate_physics"), true);
-		}
-
-		FName ProfileName = PrimComp->GetCollisionProfileName();
-		if (ProfileName != NAME_None)
-		{
-			Props->SetStringField(TEXT("collision_profile_name"), ProfileName.ToString());
-		}
-
-		if (PrimComp->GetGenerateOverlapEvents())
-		{
-			Props->SetBoolField(TEXT("generate_overlap_events"), true);
-		}
-	}
-
-	// --- CapsuleComponent ---
-	if (UCapsuleComponent* Capsule = Cast<UCapsuleComponent>(Component))
-	{
-		Props->SetNumberField(TEXT("capsule_half_height"), Capsule->GetUnscaledCapsuleHalfHeight());
-		Props->SetNumberField(TEXT("capsule_radius"), Capsule->GetUnscaledCapsuleRadius());
-	}
-
-	// --- SphereComponent ---
-	if (USphereComponent* Sphere = Cast<USphereComponent>(Component))
-	{
-		Props->SetNumberField(TEXT("sphere_radius"), Sphere->GetUnscaledSphereRadius());
-	}
-
-	// --- BoxComponent ---
-	if (UBoxComponent* Box = Cast<UBoxComponent>(Component))
-	{
-		FVector Extent = Box->GetUnscaledBoxExtent();
-		Props->SetObjectField(TEXT("box_extent"), UnrealClaudeJsonUtils::VectorToJson(Extent));
-	}
-
-	// --- SkeletalMeshComponent ---
-	if (USkeletalMeshComponent* SkelMesh = Cast<USkeletalMeshComponent>(Component))
-	{
-		if (SkelMesh->GetSkeletalMeshAsset())
-		{
-			Props->SetStringField(TEXT("skeletal_mesh"), SkelMesh->GetSkeletalMeshAsset()->GetPathName());
-		}
-
-		if (SkelMesh->AnimClass)
-		{
-			Props->SetStringField(TEXT("anim_class"), SkelMesh->AnimClass->GetPathName());
-		}
-	}
-
-	// --- StaticMeshComponent ---
-	if (UStaticMeshComponent* StaticMesh = Cast<UStaticMeshComponent>(Component))
-	{
-		if (StaticMesh->GetStaticMesh())
-		{
-			Props->SetStringField(TEXT("static_mesh"), StaticMesh->GetStaticMesh()->GetPathName());
-		}
-	}
-
-	// --- CharacterMovementComponent ---
-	if (UCharacterMovementComponent* MoveComp = Cast<UCharacterMovementComponent>(Component))
-	{
-		Props->SetNumberField(TEXT("max_walk_speed"), MoveComp->MaxWalkSpeed);
-		Props->SetNumberField(TEXT("jump_z_velocity"), MoveComp->JumpZVelocity);
-
-		if (!FMath::IsNearlyEqual(MoveComp->GravityScale, 1.0f))
-		{
-			Props->SetNumberField(TEXT("gravity_scale"), MoveComp->GravityScale);
-		}
-
-		Props->SetNumberField(TEXT("max_acceleration"), MoveComp->MaxAcceleration);
-		Props->SetNumberField(TEXT("air_control"), MoveComp->AirControl);
-		Props->SetNumberField(TEXT("max_step_height"), MoveComp->MaxStepHeight);
-		Props->SetNumberField(TEXT("walkable_floor_angle"), MoveComp->GetWalkableFloorAngle());
-	}
-
-	// --- SpringArmComponent ---
-	if (USpringArmComponent* SpringArm = Cast<USpringArmComponent>(Component))
-	{
-		Props->SetNumberField(TEXT("target_arm_length"), SpringArm->TargetArmLength);
-		Props->SetBoolField(TEXT("use_pawn_control_rotation"), SpringArm->bUsePawnControlRotation);
-
-		FVector SocketOff = SpringArm->SocketOffset;
-		if (!SocketOff.IsNearlyZero())
-		{
-			Props->SetObjectField(TEXT("socket_offset"), UnrealClaudeJsonUtils::VectorToJson(SocketOff));
-		}
-
-		FVector TargetOff = SpringArm->TargetOffset;
-		if (!TargetOff.IsNearlyZero())
-		{
-			Props->SetObjectField(TEXT("target_offset"), UnrealClaudeJsonUtils::VectorToJson(TargetOff));
-		}
-
-		Props->SetBoolField(TEXT("enable_camera_lag"), SpringArm->bEnableCameraLag);
-		if (SpringArm->bEnableCameraLag)
-		{
-			Props->SetNumberField(TEXT("camera_lag_speed"), SpringArm->CameraLagSpeed);
-		}
-	}
-
-	// --- CameraComponent ---
-	if (UCameraComponent* Camera = Cast<UCameraComponent>(Component))
-	{
-		Props->SetNumberField(TEXT("field_of_view"), Camera->FieldOfView);
-	}
-
-	// --- WidgetComponent ---
-	if (UWidgetComponent* Widget = Cast<UWidgetComponent>(Component))
-	{
-		if (Widget->GetWidgetClass())
-		{
-			Props->SetStringField(TEXT("widget_class"), Widget->GetWidgetClass()->GetName());
-		}
-		Props->SetStringField(TEXT("space"),
-			Widget->GetWidgetSpace() == EWidgetSpace::World ? TEXT("World") : TEXT("Screen"));
-		FVector2D DrawSize = Widget->GetDrawSize();
-		Props->SetNumberField(TEXT("draw_size_x"), DrawSize.X);
-		Props->SetNumberField(TEXT("draw_size_y"), DrawSize.Y);
-	}
+	DefaultComp->MarkAsGarbage();
 
 	return Props;
+}
+
+// ============================================================================
+// Single Component
+// ============================================================================
+
+TSharedPtr<FJsonObject> FComponentInspector::SerializeSingleComponent(UBlueprint* Blueprint, const FString& ComponentName)
+{
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+
+	if (!Blueprint || !Blueprint->GeneratedClass)
+	{
+		Result->SetStringField(TEXT("error"), TEXT("Invalid Blueprint or no generated class"));
+		return Result;
+	}
+
+	AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject());
+	if (!CDO)
+	{
+		Result->SetStringField(TEXT("error"), TEXT("Could not get CDO"));
+		return Result;
+	}
+
+	TSet<FName> SCSVarNames;
+	if (Blueprint->SimpleConstructionScript)
+	{
+		for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+		{
+			SCSVarNames.Add(Node->GetVariableName());
+		}
+	}
+
+	TInlineComponentArray<UActorComponent*> AllComponents;
+	CDO->GetComponents(AllComponents);
+
+	// Build SCS variable name → CDO component mapping
+	TMap<FName, UActorComponent*> SCSVarToComp;
+	if (Blueprint->SimpleConstructionScript)
+	{
+		for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+		{
+			FName VarName = Node->GetVariableName();
+			for (UActorComponent* Comp : AllComponents)
+			{
+				if (Comp->GetFName() == VarName)
+				{
+					SCSVarToComp.Add(VarName, Comp);
+					break;
+				}
+			}
+		}
+	}
+
+	// Search CDO components first
+	UActorComponent* Found = nullptr;
+	FName SearchName(*ComponentName);
+	for (UActorComponent* Comp : AllComponents)
+	{
+		if (Comp->GetFName() == SearchName)
+		{
+			Found = Comp;
+			break;
+		}
+	}
+
+	// If not in CDO, search SCS templates (BP-added components)
+	USCS_Node* FoundSCSNode = nullptr;
+	if (!Found && Blueprint->SimpleConstructionScript)
+	{
+		for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+		{
+			if (Node && Node->GetVariableName() == SearchName)
+			{
+				FoundSCSNode = Node;
+				break;
+			}
+		}
+	}
+
+	if (Found)
+	{
+		Result->SetStringField(TEXT("name"), Found->GetName());
+		Result->SetStringField(TEXT("class"), Found->GetClass()->GetName());
+		Result->SetStringField(TEXT("origin"),
+			SCSVarNames.Contains(Found->GetFName()) ? TEXT("blueprint") : TEXT("cpp"));
+
+		TSharedPtr<FJsonObject> Props = GetComponentProperties(Found);
+		if (Props.IsValid() && Props->Values.Num() > 0)
+		{
+			Result->SetObjectField(TEXT("properties"), Props);
+		}
+	}
+	else if (FoundSCSNode)
+	{
+		Result->SetStringField(TEXT("name"), FoundSCSNode->GetVariableName().ToString());
+		if (FoundSCSNode->ComponentTemplate)
+		{
+			Result->SetStringField(TEXT("class"), FoundSCSNode->ComponentTemplate->GetClass()->GetName());
+
+			TSharedPtr<FJsonObject> Props = GetComponentProperties(FoundSCSNode->ComponentTemplate);
+			if (Props.IsValid() && Props->Values.Num() > 0)
+			{
+				Result->SetObjectField(TEXT("properties"), Props);
+			}
+		}
+		else if (FoundSCSNode->ComponentClass)
+		{
+			Result->SetStringField(TEXT("class"), FoundSCSNode->ComponentClass->GetName());
+		}
+		Result->SetStringField(TEXT("origin"), TEXT("blueprint"));
+	}
+	else
+	{
+		TArray<FString> Names;
+		for (UActorComponent* Comp : AllComponents)
+		{
+			Names.Add(Comp->GetName());
+		}
+		if (Blueprint->SimpleConstructionScript)
+		{
+			for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+			{
+				if (Node)
+				{
+					FString VarName = Node->GetVariableName().ToString();
+					if (!Names.Contains(VarName))
+					{
+						Names.Add(VarName);
+					}
+				}
+			}
+		}
+		Result->SetStringField(TEXT("error"), FString::Printf(
+			TEXT("Component '%s' not found. Available: %s"),
+			*ComponentName, *FString::Join(Names, TEXT(", "))));
+		return Result;
+	}
+
+	return Result;
 }
 
 // ============================================================================
