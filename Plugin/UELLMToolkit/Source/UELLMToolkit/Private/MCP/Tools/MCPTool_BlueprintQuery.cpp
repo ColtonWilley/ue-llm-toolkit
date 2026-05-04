@@ -9,6 +9,9 @@
 #include "UnrealClaudeModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/SCS_Node.h"
+#include "Components/ActorComponent.h"
 
 FMCPToolResult FMCPTool_BlueprintQuery::Execute(const TSharedRef<FJsonObject>& Params)
 {
@@ -601,6 +604,77 @@ FMCPToolResult FMCPTool_BlueprintQuery::ExecuteGetDefaults(const TSharedRef<FJso
 	}
 	ResponseData->SetStringField(TEXT("parent_class"), ParentClassName);
 
+	// --- Optional: root the read at a component instead of the CDO ---
+	FString ComponentName;
+	Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+	UObject* RootObject = CDO;
+	bool bRootedAtComponent = false;
+	if (!ComponentName.IsEmpty())
+	{
+		// Resolution order MUST match the write side (FMCPTool_BlueprintModify::ResolveComponentTemplate):
+		// SCS templates first (covers Blueprint-added components like AIPerception on a controller,
+		// whose CDO field is null because the SCS owns the editor-time template), then CDO components
+		// (covers C++-declared components present on the actor CDO). Mismatched ordering would make
+		// `get_defaults` and `set_cdo_default` address different objects when names collide.
+		UObject* ResolvedComponent = nullptr;
+		if (Blueprint->SimpleConstructionScript)
+		{
+			const FName SearchName(*ComponentName);
+			for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+			{
+				if (Node && Node->GetVariableName() == SearchName && Node->ComponentTemplate)
+				{
+					ResolvedComponent = Node->ComponentTemplate;
+					break;
+				}
+			}
+		}
+
+		if (!ResolvedComponent)
+		{
+			if (AActor* ActorCDO = Cast<AActor>(CDO))
+			{
+				TInlineComponentArray<UActorComponent*> AllComponents;
+				ActorCDO->GetComponents(AllComponents);
+				const FName SearchName(*ComponentName);
+				for (UActorComponent* Comp : AllComponents)
+				{
+					if (Comp && Comp->GetFName() == SearchName)
+					{
+						ResolvedComponent = Comp;
+						break;
+					}
+				}
+			}
+		}
+
+		if (!ResolvedComponent)
+		{
+			return FMCPToolResult::Error(FString::Printf(
+				TEXT("Component '%s' not found on Blueprint '%s' (checked SCS templates and CDO components)"),
+				*ComponentName, *Blueprint->GetName()));
+		}
+
+		RootObject = ResolvedComponent;
+		bRootedAtComponent = true;
+		ResponseData->SetStringField(TEXT("root"), ComponentName);
+		ResponseData->SetStringField(TEXT("root_class"), ResolvedComponent->GetClass()->GetName());
+	}
+
+	// --- Build recursion context (default-constructed = current behavior, no recursion) ---
+	double MaxDepthD = 0.0;
+	Params->TryGetNumberField(TEXT("max_depth"), MaxDepthD);
+	double MaxPropsD = 500.0;
+	Params->TryGetNumberField(TEXT("max_properties"), MaxPropsD);
+	bool bIncludeNonEdit = false;
+	Params->TryGetBoolField(TEXT("include_non_edit"), bIncludeNonEdit);
+
+	FPropertyRecursionContext Ctx;
+	Ctx.MaxDepth = FMath::Clamp(static_cast<int32>(MaxDepthD), 0, 8);
+	Ctx.MaxProperties = FMath::Clamp(static_cast<int32>(MaxPropsD), 1, 5000);
+	Ctx.bIncludeNonEdit = bIncludeNonEdit;
+
 	const TArray<TSharedPtr<FJsonValue>>* PropertiesArray = nullptr;
 	if (Params->TryGetArrayField(TEXT("properties"), PropertiesArray) && PropertiesArray && PropertiesArray->Num() > 0)
 	{
@@ -616,7 +690,7 @@ FMCPToolResult FMCPTool_BlueprintQuery::ExecuteGetDefaults(const TSharedRef<FJso
 				continue;
 			}
 
-			FPropertySerializer::FPropertyPathResult Result = FPropertySerializer::GetPropertyByPath(CDO, PropName);
+			FPropertySerializer::FPropertyPathResult Result = FPropertySerializer::GetPropertyByPath(RootObject, PropName, Ctx);
 			if (Result.bSuccess)
 			{
 				Values->SetField(PropName, Result.Value);
@@ -637,25 +711,33 @@ FMCPToolResult FMCPTool_BlueprintQuery::ExecuteGetDefaults(const TSharedRef<FJso
 		}
 
 		return FMCPToolResult::Success(
-			FString::Printf(TEXT("Read %d CDO properties from '%s'"), SuccessCount, *Blueprint->GetName()),
+			FString::Printf(TEXT("Read %d properties from '%s'%s"),
+				SuccessCount,
+				*Blueprint->GetName(),
+				bRootedAtComponent ? *FString::Printf(TEXT(" (component: %s)"), *ComponentName) : TEXT("")),
 			ResponseData
 		);
 	}
 	else
 	{
+		// Full-dump path. ParentCDO comparison is only meaningful when reading the actual Blueprint CDO;
+		// for component templates, pass nullptr so all configured values surface.
 		UObject* ParentCDO = nullptr;
-		if (Blueprint->ParentClass)
+		if (!bRootedAtComponent && Blueprint->ParentClass)
 		{
 			ParentCDO = Blueprint->ParentClass->GetDefaultObject();
 		}
 
-		TSharedPtr<FJsonObject> Overrides = FPropertySerializer::GetCDOOverrides(CDO, ParentCDO, true);
+		TSharedPtr<FJsonObject> Overrides = FPropertySerializer::GetCDOOverrides(RootObject, ParentCDO, true, Ctx);
 
 		ResponseData->SetObjectField(TEXT("overrides"), Overrides);
 		ResponseData->SetNumberField(TEXT("count"), Overrides->Values.Num());
 
 		return FMCPToolResult::Success(
-			FString::Printf(TEXT("Found %d CDO overrides on '%s'"), Overrides->Values.Num(), *Blueprint->GetName()),
+			FString::Printf(TEXT("Found %d overrides on '%s'%s"),
+				Overrides->Values.Num(),
+				*Blueprint->GetName(),
+				bRootedAtComponent ? *FString::Printf(TEXT(" (component: %s)"), *ComponentName) : TEXT("")),
 			ResponseData
 		);
 	}

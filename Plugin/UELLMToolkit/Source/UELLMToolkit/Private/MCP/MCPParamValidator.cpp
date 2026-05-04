@@ -104,14 +104,70 @@ bool FMCPParamValidator::ValidatePropertyPath(const FString& PropertyPath, FStri
 		return false;
 	}
 
-	// Property paths should only contain alphanumeric, underscore, and dot
+	// Property paths may contain alphanumeric, underscore, dot (segment separator),
+	// and balanced [N] array indices. Reject other characters as a defense-in-depth
+	// measure (the actual property lookup is reflection-based, but we keep the input
+	// surface narrow).
+	// Cap bracket-body length to defang integer-overflow attacks. 9 digits permit any value
+	// up to 999_999_999 — far above realistic UE array sizes — and stay well clear of
+	// MAX_int32 (2_147_483_647) so the eventual Atoi/Atoi64 in the parser can't wrap.
+	const int32 MaxBracketDigits = 9;
+	int32 BracketDepth = 0;
+	int32 IndexDigitsSeen = 0;
 	for (TCHAR c : PropertyPath)
 	{
+		if (c == TEXT('['))
+		{
+			if (BracketDepth != 0)
+			{
+				OutError = TEXT("Property path cannot contain nested brackets");
+				return false;
+			}
+			BracketDepth = 1;
+			IndexDigitsSeen = 0;
+			continue;
+		}
+		if (c == TEXT(']'))
+		{
+			if (BracketDepth != 1)
+			{
+				OutError = TEXT("Property path has unbalanced ']'");
+				return false;
+			}
+			if (IndexDigitsSeen == 0)
+			{
+				OutError = TEXT("Property path has empty bracket pair '[]'");
+				return false;
+			}
+			BracketDepth = 0;
+			continue;
+		}
+		if (BracketDepth == 1)
+		{
+			if (!FChar::IsDigit(c))
+			{
+				OutError = FString::Printf(TEXT("Property path bracket body must be numeric, got '%c'"), c);
+				return false;
+			}
+			IndexDigitsSeen++;
+			if (IndexDigitsSeen > MaxBracketDigits)
+			{
+				OutError = FString::Printf(TEXT("Property path array index exceeds %d digits"), MaxBracketDigits);
+				return false;
+			}
+			continue;
+		}
 		if (!FChar::IsAlnum(c) && c != TEXT('_') && c != TEXT('.'))
 		{
-			OutError = FString::Printf(TEXT("Property path contains invalid character: '%c'. Only alphanumeric, underscore, and dot are allowed."), c);
+			OutError = FString::Printf(TEXT("Property path contains invalid character: '%c'. Only alphanumeric, underscore, dot, and balanced [N] indices are allowed."), c);
 			return false;
 		}
+	}
+
+	if (BracketDepth != 0)
+	{
+		OutError = TEXT("Property path has unclosed '['");
+		return false;
 	}
 
 	// Check for double dots which could indicate path traversal attempts

@@ -231,6 +231,63 @@ bool FMCPParamValidator_ValidatePropertyPath_Format::RunTest(const FString& Para
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPParamValidator_ValidatePropertyPath_BracketIndices,
+	"UnrealClaude.MCP.ParamValidator.PropertyPath.BracketIndices",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPParamValidator_ValidatePropertyPath_BracketIndices::RunTest(const FString& Parameters)
+{
+	FString Error;
+
+	// Valid bracket forms.
+	TestTrue("Single bracketed segment is valid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Items[0]"), Error));
+	TestTrue("Bracket plus dot navigation is valid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[0].Bar"), Error));
+	TestTrue("Multi-digit index is valid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[123].Bar"), Error));
+	TestTrue("Multiple bracketed segments in one path is valid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("A[0].B[1].C"), Error));
+	TestTrue("AIPerception SensesConfig path is valid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("SensesConfig[0].SightRadius"), Error));
+
+	// Invalid bracket forms.
+	TestFalse("Empty brackets are invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[]"), Error));
+	TestFalse("Non-numeric bracket body is invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[abc]"), Error));
+	TestFalse("Mixed-content bracket body is invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[1a]"), Error));
+	TestFalse("Unclosed bracket is invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[0"), Error));
+	TestFalse("Stray close bracket is invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo0]"), Error));
+	TestFalse("Nested brackets are invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[0[1]]"), Error));
+	TestFalse("Negative index char (minus) is invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[-1]"), Error));
+	TestFalse("Overlong index (overflow defense) is invalid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo[1234567890]"), Error));
+
+	// Backwards-compat: pre-bracket valid paths still validate.
+	TestTrue("Plain property still valid",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("MyProperty"), Error));
+	TestTrue("Dot-numeric (legacy array form) still passes char check",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo.0.Bar"), Error));
+
+	// Regression guard: previously-rejected dangerous chars must still be rejected.
+	TestFalse("Angle brackets still rejected",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Property<T>"), Error));
+	TestFalse("Slash still rejected",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo/Bar"), Error));
+	TestFalse("Semicolon still rejected",
+		FMCPParamValidator::ValidatePropertyPath(TEXT("Foo;Bar"), Error));
+
+	return true;
+}
+
 // ===== Numeric Value Validation Tests =====
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

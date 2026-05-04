@@ -56,7 +56,7 @@ public:
 			"Level 2 (Structure): 'create', 'reparent', 'add_variable', 'remove_variable', 'add_function', 'remove_function'\n"
 			"Level 3 (Nodes): 'add_node', 'add_nodes' (batch), 'delete_node'\n"
 			"Level 4 (Wiring): 'connect_pins', 'disconnect_pins', 'set_pin_value'\n"
-			"Level 5 (Defaults): 'set_component_default' - set default property on BP component, 'set_cdo_default' - set top-level CDO property, 'add_component' - add component to BP, 'remove_component' - remove BP-added (SCS) component\n"
+			"Level 5 (Defaults): 'set_cdo_default' - set CDO property (optional 'component_name' re-roots at an SCS/CDO component; supports '[N]' array indices in 'property'), 'set_component_default' - same as set_cdo_default+component_name (legacy), 'add_component' - add component to BP, 'remove_component' - remove BP-added (SCS) component\n"
 			"Level 6 (Debug): 'add_debug_print' - add labeled debug print subgraph, 'remove_debug_print' - remove by label\n"
 			"Level 7 (Layout): 'layout_graph' - auto-arrange nodes into readable BFS grid layout\n"
 			"Validation: 'compile' - compile single BP with diagnostics, 'compile_all' - batch compile under path\n\n"
@@ -70,6 +70,7 @@ public:
 			"  Add node: {\"operation\":\"add_node\",\"blueprint_path\":\"/Game/BP/MyBP\",\"node_type\":\"CallFunction\",\"node_params\":{\"function\":\"PrintString\"}}\n"
 			"  Wire pins: {\"operation\":\"connect_pins\",\"blueprint_path\":\"/Game/BP/MyBP\",\"source_node_id\":\"<id>\",\"target_node_id\":\"<id>\"}\n"
 			"  Set CDO default: {\"operation\":\"set_cdo_default\",\"blueprint_path\":\"/Game/BP/MyBP\",\"property\":\"MaxWalkSpeed\",\"value\":600}\n"
+			"  Set component template default: {\"operation\":\"set_cdo_default\",\"blueprint_path\":\"/Game/AI/BP_AIController\",\"component_name\":\"AIPerception\",\"property\":\"SensesConfig[0].SightRadius\",\"value\":2500}\n"
 			"  Layout graph: {\"operation\":\"layout_graph\",\"blueprint_path\":\"/Game/BP/MyBP\"}"
 		);
 		Info.Parameters = {
@@ -145,13 +146,13 @@ public:
 			FMCPToolParameter(TEXT("attach_to"), TEXT("string"),
 				TEXT("For 'add_component': parent component variable name to attach to"), false),
 
-			// For set_component_default / add_component / remove_component
+			// For set_cdo_default / set_component_default / add_component / remove_component
 			FMCPToolParameter(TEXT("component_name"), TEXT("string"),
-				TEXT("Component variable name (e.g., 'CameraBoom', 'CharacterMovement0', 'Mesh')"), false),
+				TEXT("Component variable name (e.g., 'CameraBoom', 'CharacterMovement0', 'Mesh', 'AIPerception'). For 'set_cdo_default' it re-roots the write at this component's SCS/CDO template instead of the Blueprint CDO."), false),
 			FMCPToolParameter(TEXT("socket_name"), TEXT("string"),
 				TEXT("add_component: bone/socket name to attach to (e.g., 'hand_r')"), false),
 			FMCPToolParameter(TEXT("property"), TEXT("string"),
-				TEXT("Property path with dot notation (e.g., 'RelativeRotation', 'RelativeRotation.Yaw', 'MaxWalkSpeed')"), false),
+				TEXT("Property path. Dot navigates structs/objects; '[N]' indexes arrays. Examples: 'RelativeRotation', 'RelativeRotation.Yaw', 'MaxWalkSpeed', 'SensesConfig[0].SightRadius'."), false),
 			FMCPToolParameter(TEXT("value"), TEXT("any"),
 				TEXT("Value to set: number, bool, string, or object (e.g., {\"pitch\":0,\"yaw\":-90,\"roll\":0})"), false),
 
@@ -227,10 +228,16 @@ private:
 	FMCPToolResult ExecuteCompile(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteCompileAll(const TSharedRef<FJsonObject>& Params);
 
-	// Property reflection helpers for set_component_default
+	// Property reflection helpers for set_component_default / set_cdo_default
 	bool SetComponentPropertyFromJson(UObject* Template, const FString& PropertyPath, const TSharedPtr<FJsonValue>& Value, FString& OutError);
 	bool SetNumericValue(FNumericProperty* NumProp, void* ValuePtr, const TSharedPtr<FJsonValue>& Value);
 	bool SetStructValue(FStructProperty* StructProp, void* ValuePtr, const TSharedPtr<FJsonValue>& Value);
+
+	// Resolve a component template by variable name on a Blueprint.
+	// Searches SCS templates first (Blueprint-added components like AIPerception),
+	// falls back to CDO actor-components (C++-declared components present on the actor CDO).
+	// Returns nullptr with a populated OutError on miss.
+	UObject* ResolveComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName, FString& OutError) const;
 
 	// Helpers
 	EBlueprintType ParseBlueprintType(const FString& TypeString);

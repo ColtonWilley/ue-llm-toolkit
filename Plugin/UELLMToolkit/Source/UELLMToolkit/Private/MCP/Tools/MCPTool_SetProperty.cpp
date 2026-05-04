@@ -2,10 +2,12 @@
 
 #include "MCPTool_SetProperty.h"
 #include "MCP/MCPParamValidator.h"
+#include "PropertyPathParser.h"
 #include "UnrealClaudeModule.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "Components/ActorComponent.h"
 #include "EngineUtils.h"
 #include "UObject/PropertyAccessUtil.h"
 
@@ -51,9 +53,36 @@ FMCPToolResult FMCPTool_SetProperty::Execute(const TSharedRef<FJsonObject>& Para
 		return ActorNotFoundError(ActorName);
 	}
 
+	// Optional: re-root the write at a specific component (exact-match by name) instead of the
+	// actor itself. This eliminates the in-path component lookup and mirrors blueprint_modify's
+	// 'set_cdo_default + component_name' shape.
+	FString ComponentName;
+	Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+	UObject* TargetRoot = Actor;
+	if (!ComponentName.IsEmpty())
+	{
+		UActorComponent* FoundComponent = nullptr;
+		const FName SearchName(*ComponentName);
+		for (UActorComponent* Comp : Actor->GetComponents())
+		{
+			if (Comp && Comp->GetFName() == SearchName)
+			{
+				FoundComponent = Comp;
+				break;
+			}
+		}
+		if (!FoundComponent)
+		{
+			return FMCPToolResult::Error(FString::Printf(
+				TEXT("Component '%s' not found on actor '%s'"), *ComponentName, *Actor->GetName()));
+		}
+		TargetRoot = FoundComponent;
+	}
+
 	// Set the property
 	FString ErrorMessage;
-	if (!SetPropertyFromJson(Actor, PropertyPath, Value, ErrorMessage))
+	if (!SetPropertyFromJson(TargetRoot, PropertyPath, Value, ErrorMessage))
 	{
 		return FMCPToolResult::Error(ErrorMessage);
 	}
@@ -66,9 +95,16 @@ FMCPToolResult FMCPTool_SetProperty::Execute(const TSharedRef<FJsonObject>& Para
 	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
 	ResultData->SetStringField(TEXT("actor"), Actor->GetName());
 	ResultData->SetStringField(TEXT("property"), PropertyPath);
+	if (!ComponentName.IsEmpty())
+	{
+		ResultData->SetStringField(TEXT("component"), ComponentName);
+	}
 
 	return FMCPToolResult::Success(
-		FString::Printf(TEXT("Set property '%s' on actor '%s'"), *PropertyPath, *Actor->GetName()),
+		FString::Printf(TEXT("Set property '%s' on actor '%s'%s"),
+			*PropertyPath,
+			*Actor->GetName(),
+			ComponentName.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (component: %s)"), *ComponentName)),
 		ResultData
 	);
 }
@@ -452,10 +488,57 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 		return false;
 	}
 
-	// Parse property path into components for traversal
-	// Example: "StaticMeshComponent.RelativeLocation.X" -> ["StaticMeshComponent", "RelativeLocation", "X"]
+	// Parse property path into components for traversal.
+	// Canonical form: "StaticMeshComponent.RelativeLocation.X" or "AIPerception.SensesConfig[0].SightRadius".
+	// Legacy form (still accepted): "AIPerception.SensesConfig.0.SightRadius" with numeric segments.
+	//
+	// We normalize by tokenizing through the shared parser. If a segment carries an inline "[N]",
+	// we expand it into two synthetic segments (Name then stringified index) so the existing
+	// NavigateToProperty loop — which already handles a numeric segment after an array property —
+	// works unchanged. If the input used the legacy dot-numeric form, we emit a Verbose log to
+	// nudge migration without breaking existing scripts.
+	TArray<FString> RawSegments;
+	FString SplitErr;
+	if (!FPropertyPathParser::SplitPath(PropertyPath, RawSegments, SplitErr))
+	{
+		OutError = SplitErr;
+		return false;
+	}
+
 	TArray<FString> PathParts;
-	PropertyPath.ParseIntoArray(PathParts, TEXT("."), true);
+	PathParts.Reserve(RawSegments.Num() * 2);
+	bool bHasBracketForm = false;
+	bool bHasLegacyDotNumeric = false;
+	for (const FString& Raw : RawSegments)
+	{
+		if (Raw.IsNumeric())
+		{
+			bHasLegacyDotNumeric = true;
+			PathParts.Add(Raw);
+			continue;
+		}
+
+		FString SegName;
+		int32 SegIndex = INDEX_NONE;
+		FString ParseErr;
+		if (!FPropertyPathParser::ParseSegment(Raw, SegName, SegIndex, ParseErr))
+		{
+			OutError = ParseErr;
+			return false;
+		}
+		PathParts.Add(SegName);
+		if (SegIndex != INDEX_NONE)
+		{
+			bHasBracketForm = true;
+			PathParts.Add(FString::FromInt(SegIndex));
+		}
+	}
+
+	if (bHasLegacyDotNumeric && !bHasBracketForm)
+	{
+		// Per-call deprecation hint: prefer "Foo[N].Bar" over "Foo.N.Bar". Visible at default Log level.
+		UE_LOG(LogUnrealClaude, Log, TEXT("set_property: dot-numeric path '%s' is the legacy form; '[N]' bracket syntax is preferred."), *PropertyPath);
+	}
 
 	UObject* TargetObject = nullptr;
 	FProperty* Property = nullptr;

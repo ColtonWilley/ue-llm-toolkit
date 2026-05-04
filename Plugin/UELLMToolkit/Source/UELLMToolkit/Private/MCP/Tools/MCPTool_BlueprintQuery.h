@@ -43,7 +43,7 @@ public:
 			"- 'get_event_graph': Get event graph execution chains (events, function calls, branches)\n"
 			"- 'get_anim_graph': Get anim graph pose chain (Root backward through blends/slots/players)\n"
 			"- 'get_state_machine_detail': Get state machine states, transitions, and rule expressions\n"
-			"- 'get_defaults': Get CDO default property values (all overrides or specific properties)\n"
+			"- 'get_defaults': Get CDO default property values. With 'max_depth' > 0 recurses into instanced UObject subobjects; with 'component_name' reads from an SCS component template instead of the CDO. Property paths support [N] array indexing (e.g. SensesConfig[0].SightRadius).\n"
 			"- 'find_nodes': Search nodes by class/label/type — lightweight summaries, no pin arrays\n"
 			"- 'get_node': Single node by ID with complete pin data\n"
 			"- 'verify_connection': Check if connection exists between two nodes/pins\n"
@@ -78,7 +78,7 @@ public:
 			FMCPToolParameter(TEXT("include_graphs"), TEXT("boolean"),
 				TEXT("Include graph info in inspect result"), false, TEXT("false")),
 			FMCPToolParameter(TEXT("component_name"), TEXT("string"),
-				TEXT("For 'get_components': return only this component (by CDO name or SCS variable name)"), false),
+				TEXT("For 'get_components': return only this component (by CDO name or SCS variable name). For 'get_defaults': read properties from this component's SCS template / CDO component instead of the Blueprint CDO root."), false),
 			FMCPToolParameter(TEXT("actor_label"), TEXT("string"),
 				TEXT("For 'get_collision': inspect a level actor instead of Blueprint CDO"), false),
 			FMCPToolParameter(TEXT("graph_name"), TEXT("string"),
@@ -86,7 +86,7 @@ public:
 			FMCPToolParameter(TEXT("state_machine_name"), TEXT("string"),
 				TEXT("For 'get_state_machine_detail': which state machine to inspect"), false),
 			FMCPToolParameter(TEXT("properties"), TEXT("array"),
-				TEXT("For 'get_defaults': specific property names/paths to read (omit for all overrides)"), false),
+				TEXT("For 'get_defaults': specific property names/paths to read (omit for all overrides). Supports '.' for struct/object navigation and '[N]' array indices, e.g. 'SensesConfig[0].SightRadius'."), false),
 			FMCPToolParameter(TEXT("search"), TEXT("string"),
 				TEXT("For 'find_nodes': label substring to search for"), false),
 			FMCPToolParameter(TEXT("node_class"), TEXT("string"),
@@ -108,7 +108,11 @@ public:
 			FMCPToolParameter(TEXT("pin_filter"), TEXT("string"),
 				TEXT("For 'get_node_connections': comma-separated pin names to include"), false),
 			FMCPToolParameter(TEXT("max_depth"), TEXT("number"),
-				TEXT("For 'get_exec_chain': max walk depth (default: 50)"), false, TEXT("50"))
+				TEXT("For 'get_exec_chain' (default: 50): max walk depth. For 'get_defaults' (default: 0, max: 8): recurse into instanced UObject subobject fields."), false, TEXT("50")),
+			FMCPToolParameter(TEXT("max_properties"), TEXT("number"),
+				TEXT("For 'get_defaults' with recursion: total property-count cap (default: 500, max: 5000)."), false, TEXT("500")),
+			FMCPToolParameter(TEXT("include_non_edit"), TEXT("boolean"),
+				TEXT("For 'get_defaults': include non-editable / non-BP-visible properties (default: false). Transient/deprecated/delegate properties are still skipped."), false, TEXT("false"))
 		};
 		Info.Annotations = FMCPToolAnnotations::ReadOnly();
 		return Info;

@@ -1,12 +1,19 @@
 // Copyright Natali Caggiano. All Rights Reserved.
 
 #include "PropertySerializer.h"
+#include "PropertyPathParser.h"
 #include "UnrealClaudeUtils.h"
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
 #include "UObject/EnumProperty.h"
 
 TSharedPtr<FJsonValue> FPropertySerializer::PropertyToJsonValue(FProperty* Property, const void* ValuePtr)
+{
+	FPropertyRecursionContext Ctx;
+	return PropertyToJsonValue(Property, ValuePtr, Ctx);
+}
+
+TSharedPtr<FJsonValue> FPropertySerializer::PropertyToJsonValue(FProperty* Property, const void* ValuePtr, FPropertyRecursionContext& Ctx)
 {
 	if (!Property || !ValuePtr)
 	{
@@ -71,7 +78,13 @@ TSharedPtr<FJsonValue> FPropertySerializer::PropertyToJsonValue(FProperty* Prope
 		FScriptArrayHelper ArrayHelper(ArrayProp, ValuePtr);
 		for (int32 i = 0; i < ArrayHelper.Num(); ++i)
 		{
-			JsonArray.Add(PropertyToJsonValue(ArrayProp->Inner, ArrayHelper.GetRawPtr(i)));
+			if (Ctx.IsBudgetExhausted())
+			{
+				JsonArray.Add(MakeShared<FJsonValueString>(TEXT("_truncated")));
+				break;
+			}
+			JsonArray.Add(PropertyToJsonValue(ArrayProp->Inner, ArrayHelper.GetRawPtr(i), Ctx));
+			Ctx.PropertyCount++;
 		}
 		return MakeShared<FJsonValueArray>(JsonArray);
 	}
@@ -86,11 +99,17 @@ TSharedPtr<FJsonValue> FPropertySerializer::PropertyToJsonValue(FProperty* Prope
 			{
 				continue;
 			}
+			if (Ctx.IsBudgetExhausted())
+			{
+				MapObj->SetBoolField(TEXT("_truncated"), true);
+				break;
+			}
 
 			FString KeyStr;
 			MapProp->KeyProp->ExportTextItem_Direct(KeyStr, MapHelper.GetKeyPtr(i), nullptr, nullptr, PPF_None);
-			TSharedPtr<FJsonValue> ValJson = PropertyToJsonValue(MapProp->ValueProp, MapHelper.GetValuePtr(i));
+			TSharedPtr<FJsonValue> ValJson = PropertyToJsonValue(MapProp->ValueProp, MapHelper.GetValuePtr(i), Ctx);
 			MapObj->SetField(KeyStr, ValJson);
+			Ctx.PropertyCount++;
 		}
 		return MakeShared<FJsonValueObject>(MapObj);
 	}
@@ -120,11 +139,52 @@ TSharedPtr<FJsonValue> FPropertySerializer::PropertyToJsonValue(FProperty* Prope
 	if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Property))
 	{
 		UObject* Obj = ObjProp->GetObjectPropertyValue(ValuePtr);
-		if (Obj)
+		if (!Obj)
+		{
+			return MakeShared<FJsonValueString>(TEXT("None"));
+		}
+
+		const bool bInstanced = Property->HasAnyPropertyFlags(CPF_PersistentInstance | CPF_InstancedReference);
+		if (!bInstanced || !Ctx.CanRecurse())
 		{
 			return MakeShared<FJsonValueString>(Obj->GetPathName());
 		}
-		return MakeShared<FJsonValueString>(TEXT("None"));
+
+		// Visited acts as a true cycle-detector: it tracks objects on the *current* recursion
+		// stack and is popped on return. This avoids false-positive "(cycle:)" labels for the
+		// common UE pattern of two properties pointing at the same shared subobject.
+		if (Ctx.Visited.Contains(Obj))
+		{
+			return MakeShared<FJsonValueString>(FString::Printf(TEXT("(cycle: %s)"), *Obj->GetPathName()));
+		}
+		Ctx.Visited.Add(Obj);
+		Ctx.CurrentDepth++;
+
+		TSharedPtr<FJsonObject> NestedObj = MakeShared<FJsonObject>();
+		NestedObj->SetStringField(TEXT("_class"), Obj->GetClass()->GetName());
+		NestedObj->SetStringField(TEXT("_path"), Obj->GetPathName());
+
+		for (TFieldIterator<FProperty> It(Obj->GetClass()); It; ++It)
+		{
+			FProperty* InnerProp = *It;
+			if (!Ctx.bIncludeNonEdit && ShouldSkipProperty(InnerProp))
+			{
+				continue;
+			}
+			if (Ctx.IsBudgetExhausted())
+			{
+				NestedObj->SetBoolField(TEXT("_truncated"), true);
+				break;
+			}
+
+			const void* InnerValuePtr = InnerProp->ContainerPtrToValuePtr<void>(Obj);
+			NestedObj->SetField(InnerProp->GetName(), PropertyToJsonValue(InnerProp, InnerValuePtr, Ctx));
+			Ctx.PropertyCount++;
+		}
+
+		Ctx.CurrentDepth--;
+		Ctx.Visited.Remove(Obj);
+		return MakeShared<FJsonValueObject>(NestedObj);
 	}
 
 	FString ExportedText;
@@ -198,6 +258,12 @@ TSharedPtr<FJsonValue> FPropertySerializer::StructToJsonValue(FStructProperty* S
 
 FPropertySerializer::FPropertyPathResult FPropertySerializer::GetPropertyByPath(UObject* Object, const FString& PropertyPath)
 {
+	FPropertyRecursionContext Ctx;
+	return GetPropertyByPath(Object, PropertyPath, Ctx);
+}
+
+FPropertySerializer::FPropertyPathResult FPropertySerializer::GetPropertyByPath(UObject* Object, const FString& PropertyPath, FPropertyRecursionContext& Ctx)
+{
 	FPropertyPathResult Result;
 
 	if (!Object)
@@ -206,12 +272,13 @@ FPropertySerializer::FPropertyPathResult FPropertySerializer::GetPropertyByPath(
 		return Result;
 	}
 
+	// Route through the shared parser so read and write paths agree on shape validation
+	// (no leading/trailing/consecutive dots, no empty segments).
 	TArray<FString> PathParts;
-	PropertyPath.ParseIntoArray(PathParts, TEXT("."), true);
-
-	if (PathParts.Num() == 0)
+	FString SplitErr;
+	if (!FPropertyPathParser::SplitPath(PropertyPath, PathParts, SplitErr))
 	{
-		Result.Error = TEXT("Empty property path");
+		Result.Error = SplitErr;
 		return Result;
 	}
 
@@ -220,10 +287,66 @@ FPropertySerializer::FPropertyPathResult FPropertySerializer::GetPropertyByPath(
 
 	for (int32 i = 0; i < PathParts.Num() - 1; ++i)
 	{
-		FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*PathParts[i]));
+		FString SegName;
+		int32 SegIndex = INDEX_NONE;
+		FString ParseErr;
+		if (!FPropertyPathParser::ParseSegment(PathParts[i], SegName, SegIndex, ParseErr))
+		{
+			Result.Error = ParseErr;
+			return Result;
+		}
+
+		FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*SegName));
 		if (!Prop)
 		{
-			Result.Error = FString::Printf(TEXT("Property '%s' not found on %s"), *PathParts[i], *CurrentStruct->GetName());
+			Result.Error = FString::Printf(TEXT("Property '%s' not found on %s"), *SegName, *CurrentStruct->GetName());
+			return Result;
+		}
+
+		// If the segment carries an index, the property must be an array; advance into the indexed element.
+		if (SegIndex != INDEX_NONE)
+		{
+			FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop);
+			if (!ArrayProp)
+			{
+				Result.Error = FString::Printf(TEXT("Property '%s' has index [%d] but is not an array (type: %s)"),
+					*SegName, SegIndex, *Prop->GetCPPType());
+				return Result;
+			}
+
+			void* ArrayValuePtr = ArrayProp->ContainerPtrToValuePtr<void>(CurrentContainer);
+			FScriptArrayHelper ArrayHelper(ArrayProp, ArrayValuePtr);
+			if (SegIndex >= ArrayHelper.Num())
+			{
+				Result.Error = FString::Printf(TEXT("Index [%d] out of bounds for '%s' (size: %d)"),
+					SegIndex, *SegName, ArrayHelper.Num());
+				return Result;
+			}
+
+			void* ElemPtr = ArrayHelper.GetRawPtr(SegIndex);
+			FProperty* InnerProp = ArrayProp->Inner;
+
+			if (FStructProperty* StructInner = CastField<FStructProperty>(InnerProp))
+			{
+				CurrentContainer = ElemPtr;
+				CurrentStruct = StructInner->Struct;
+				continue;
+			}
+			if (FObjectProperty* ObjInner = CastField<FObjectProperty>(InnerProp))
+			{
+				UObject* NestedObj = ObjInner->GetObjectPropertyValue(ElemPtr);
+				if (!NestedObj)
+				{
+					Result.Error = FString::Printf(TEXT("Element '%s[%d]' is null"), *SegName, SegIndex);
+					return Result;
+				}
+				CurrentContainer = NestedObj;
+				CurrentStruct = NestedObj->GetClass();
+				continue;
+			}
+
+			Result.Error = FString::Printf(TEXT("Cannot navigate into '%s[%d]' (inner type: %s)"),
+				*SegName, SegIndex, *InnerProp->GetCPPType());
 			return Result;
 		}
 
@@ -239,7 +362,7 @@ FPropertySerializer::FPropertyPathResult FPropertySerializer::GetPropertyByPath(
 			UObject* NestedObj = ObjProp->GetObjectPropertyValue(ObjProp->ContainerPtrToValuePtr<void>(CurrentContainer));
 			if (!NestedObj)
 			{
-				Result.Error = FString::Printf(TEXT("Nested object '%s' is null"), *PathParts[i]);
+				Result.Error = FString::Printf(TEXT("Nested object '%s' is null"), *SegName);
 				return Result;
 			}
 			CurrentContainer = NestedObj;
@@ -247,11 +370,21 @@ FPropertySerializer::FPropertyPathResult FPropertySerializer::GetPropertyByPath(
 			continue;
 		}
 
-		Result.Error = FString::Printf(TEXT("Cannot navigate through '%s' (type: %s) — not a struct or object property"), *PathParts[i], *Prop->GetCPPType());
+		Result.Error = FString::Printf(TEXT("Cannot navigate through '%s' (type: %s) — not a struct or object property"),
+			*SegName, *Prop->GetCPPType());
 		return Result;
 	}
 
-	const FString& LeafName = PathParts.Last();
+	// Leaf segment.
+	FString LeafName;
+	int32 LeafIndex = INDEX_NONE;
+	FString LeafErr;
+	if (!FPropertyPathParser::ParseSegment(PathParts.Last(), LeafName, LeafIndex, LeafErr))
+	{
+		Result.Error = LeafErr;
+		return Result;
+	}
+
 	FProperty* LeafProp = CurrentStruct->FindPropertyByName(FName(*LeafName));
 	if (!LeafProp)
 	{
@@ -259,8 +392,33 @@ FPropertySerializer::FPropertyPathResult FPropertySerializer::GetPropertyByPath(
 		return Result;
 	}
 
+	if (LeafIndex != INDEX_NONE)
+	{
+		FArrayProperty* ArrayProp = CastField<FArrayProperty>(LeafProp);
+		if (!ArrayProp)
+		{
+			Result.Error = FString::Printf(TEXT("Leaf '%s' has index [%d] but is not an array (type: %s)"),
+				*LeafName, LeafIndex, *LeafProp->GetCPPType());
+			return Result;
+		}
+
+		void* ArrayValuePtr = ArrayProp->ContainerPtrToValuePtr<void>(CurrentContainer);
+		FScriptArrayHelper ArrayHelper(ArrayProp, ArrayValuePtr);
+		if (LeafIndex >= ArrayHelper.Num())
+		{
+			Result.Error = FString::Printf(TEXT("Leaf index [%d] out of bounds for '%s' (size: %d)"),
+				LeafIndex, *LeafName, ArrayHelper.Num());
+			return Result;
+		}
+
+		const void* ElemPtr = ArrayHelper.GetRawPtr(LeafIndex);
+		Result.Value = PropertyToJsonValue(ArrayProp->Inner, ElemPtr, Ctx);
+		Result.bSuccess = true;
+		return Result;
+	}
+
 	const void* LeafValuePtr = LeafProp->ContainerPtrToValuePtr<void>(CurrentContainer);
-	Result.Value = PropertyToJsonValue(LeafProp, LeafValuePtr);
+	Result.Value = PropertyToJsonValue(LeafProp, LeafValuePtr, Ctx);
 	Result.bSuccess = true;
 	return Result;
 }
@@ -286,6 +444,12 @@ bool FPropertySerializer::ShouldSkipProperty(FProperty* Property)
 }
 
 TSharedPtr<FJsonObject> FPropertySerializer::GetCDOOverrides(UObject* CDO, UObject* ParentCDO, bool bEditableOnly)
+{
+	FPropertyRecursionContext Ctx;
+	return GetCDOOverrides(CDO, ParentCDO, bEditableOnly, Ctx);
+}
+
+TSharedPtr<FJsonObject> FPropertySerializer::GetCDOOverrides(UObject* CDO, UObject* ParentCDO, bool bEditableOnly, FPropertyRecursionContext& Ctx)
 {
 	TSharedPtr<FJsonObject> Overrides = MakeShared<FJsonObject>();
 
@@ -322,8 +486,9 @@ TSharedPtr<FJsonObject> FPropertySerializer::GetCDOOverrides(UObject* CDO, UObje
 			}
 		}
 
-		TSharedPtr<FJsonValue> JsonVal = PropertyToJsonValue(Property, CDOValuePtr);
+		TSharedPtr<FJsonValue> JsonVal = PropertyToJsonValue(Property, CDOValuePtr, Ctx);
 		Overrides->SetField(Property->GetName(), JsonVal);
+		Ctx.PropertyCount++;
 	}
 
 	return Overrides;

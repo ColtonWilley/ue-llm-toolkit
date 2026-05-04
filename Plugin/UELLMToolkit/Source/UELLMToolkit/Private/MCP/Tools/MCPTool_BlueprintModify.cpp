@@ -6,6 +6,7 @@
 #include "GraphLayoutHelper.h"
 #include "DebugPrintBuilder.h"
 #include "BlueprintLoader.h"
+#include "PropertyPathParser.h"
 #include "MCP/MCPParamValidator.h"
 #include "MCP/MCPBlueprintLoadContext.h"
 #include "UnrealClaudeModule.h"
@@ -1061,6 +1062,51 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetPinValue(const TSharedRef<FJs
 
 // ===== Level 5: Component Default Operations =====
 
+UObject* FMCPTool_BlueprintModify::ResolveComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName, FString& OutError) const
+{
+	if (!Blueprint)
+	{
+		OutError = TEXT("Blueprint is null");
+		return nullptr;
+	}
+
+	// Strategy 1: Search SCS nodes (Blueprint-origin components like AIPerception on a controller).
+	if (Blueprint->SimpleConstructionScript)
+	{
+		const TArray<USCS_Node*>& AllNodes = Blueprint->SimpleConstructionScript->GetAllNodes();
+		for (USCS_Node* Node : AllNodes)
+		{
+			if (Node && Node->ComponentTemplate && Node->GetVariableName().ToString() == ComponentName)
+			{
+				return Node->ComponentTemplate;
+			}
+		}
+	}
+
+	// Strategy 2: Fall back to CDO components (C++-origin like capsule, mesh, movement).
+	if (Blueprint->GeneratedClass)
+	{
+		AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject());
+		if (CDO)
+		{
+			TArray<UActorComponent*> Components;
+			CDO->GetComponents(Components);
+			for (UActorComponent* Comp : Components)
+			{
+				if (Comp && Comp->GetName() == ComponentName)
+				{
+					return Comp;
+				}
+			}
+		}
+	}
+
+	OutError = FString::Printf(
+		TEXT("Component '%s' not found in Blueprint '%s'. Use blueprint_query get_components to see available components."),
+		*ComponentName, *Blueprint->GetPathName());
+	return nullptr;
+}
+
 FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetComponentDefault(const TSharedRef<FJsonObject>& Params)
 {
 	// Extract parameters
@@ -1073,6 +1119,10 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetComponentDefault(const TShare
 
 	FString PropertyPath;
 	if (!ExtractRequiredString(Params, TEXT("property"), PropertyPath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ValidatePropertyPathParam(PropertyPath, Error))
 	{
 		return Error.GetValue();
 	}
@@ -1090,47 +1140,12 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetComponentDefault(const TShare
 		return LoadError.GetValue();
 	}
 
-	// Find the component template
-	UObject* ComponentTemplate = nullptr;
-
-	// Strategy 1: Search SCS nodes (Blueprint-origin components)
-	if (Context.Blueprint->SimpleConstructionScript)
-	{
-		const TArray<USCS_Node*>& AllNodes = Context.Blueprint->SimpleConstructionScript->GetAllNodes();
-		for (USCS_Node* Node : AllNodes)
-		{
-			if (Node && Node->ComponentTemplate && Node->GetVariableName().ToString() == ComponentName)
-			{
-				ComponentTemplate = Node->ComponentTemplate;
-				break;
-			}
-		}
-	}
-
-	// Strategy 2: Fall back to CDO components (C++-origin components like capsule, mesh, movement)
-	if (!ComponentTemplate && Context.Blueprint->GeneratedClass)
-	{
-		AActor* CDO = Cast<AActor>(Context.Blueprint->GeneratedClass->GetDefaultObject());
-		if (CDO)
-		{
-			TArray<UActorComponent*> Components;
-			CDO->GetComponents(Components);
-			for (UActorComponent* Comp : Components)
-			{
-				if (Comp && Comp->GetName() == ComponentName)
-				{
-					ComponentTemplate = Comp;
-					break;
-				}
-			}
-		}
-	}
-
+	// Resolve the component template (SCS first, CDO components fallback)
+	FString ResolveError;
+	UObject* ComponentTemplate = ResolveComponentTemplate(Context.Blueprint, ComponentName, ResolveError);
 	if (!ComponentTemplate)
 	{
-		return FMCPToolResult::Error(FString::Printf(
-			TEXT("Component '%s' not found in Blueprint '%s'. Use blueprint_query get_components to see available components."),
-			*ComponentName, *Context.BlueprintPath));
+		return FMCPToolResult::Error(ResolveError);
 	}
 
 	// Register with undo system
@@ -1380,6 +1395,10 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetCDODefault(const TSharedRef<F
 	{
 		return Error.GetValue();
 	}
+	if (!ValidatePropertyPathParam(PropertyPath, Error))
+	{
+		return Error.GetValue();
+	}
 
 	if (!Params->HasField(TEXT("value")))
 	{
@@ -1404,10 +1423,31 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetCDODefault(const TSharedRef<F
 		return FMCPToolResult::Error(TEXT("Failed to get Class Default Object"));
 	}
 
-	CDO->Modify();
+	// Optional: re-root the write at an SCS / CDO component template instead of the CDO itself.
+	// Mirrors the read-side 'get_defaults' component_name behavior. Required for nested instanced
+	// subobjects whose CDO field is null because the SCS owns the editor-time template
+	// (e.g. AIPerception on an AIController-derived BP).
+	FString ComponentName;
+	Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+	UObject* RootObject = CDO;
+	bool bRootedAtComponent = false;
+	if (!ComponentName.IsEmpty())
+	{
+		FString ResolveError;
+		UObject* ComponentTemplate = ResolveComponentTemplate(Context.Blueprint, ComponentName, ResolveError);
+		if (!ComponentTemplate)
+		{
+			return FMCPToolResult::Error(ResolveError);
+		}
+		RootObject = ComponentTemplate;
+		bRootedAtComponent = true;
+	}
+
+	RootObject->Modify();
 
 	FString SetError;
-	if (!SetComponentPropertyFromJson(CDO, PropertyPath, Value, SetError))
+	if (!SetComponentPropertyFromJson(RootObject, PropertyPath, Value, SetError))
 	{
 		return FMCPToolResult::Error(SetError);
 	}
@@ -1419,9 +1459,17 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteSetCDODefault(const TSharedRef<F
 
 	TSharedPtr<FJsonObject> ResultData = Context.BuildResultJson();
 	ResultData->SetStringField(TEXT("property"), PropertyPath);
+	if (bRootedAtComponent)
+	{
+		ResultData->SetStringField(TEXT("root"), ComponentName);
+		ResultData->SetStringField(TEXT("root_class"), RootObject->GetClass()->GetName());
+	}
 
 	return FMCPToolResult::Success(
-		FString::Printf(TEXT("Set CDO property '%s' on Blueprint '%s'"), *PropertyPath, *Context.BlueprintPath),
+		FString::Printf(TEXT("Set CDO property '%s' on Blueprint '%s'%s"),
+			*PropertyPath,
+			*Context.BlueprintPath,
+			bRootedAtComponent ? *FString::Printf(TEXT(" (component: %s)"), *ComponentName) : TEXT("")),
 		ResultData
 	);
 }
@@ -1449,17 +1497,14 @@ bool FMCPTool_BlueprintModify::SetComponentPropertyFromJson(UObject* Template, c
 		return false;
 	}
 
-	// Parse dot-separated property path, resolving aliases on each segment
-	TArray<FString> PathParts;
-	PropertyPath.ParseIntoArray(PathParts, TEXT("."), true);
-	for (FString& Part : PathParts)
+	// Tokenize the path via the shared parser. Each returned segment may carry a "[N]" suffix.
+	// Aliases are resolved per-segment on the parsed Name only (never on the raw "Foo[0]" text),
+	// preserving the existing per-segment alias contract.
+	TArray<FString> Segments;
+	FString SplitErr;
+	if (!FPropertyPathParser::SplitPath(PropertyPath, Segments, SplitErr))
 	{
-		Part = ResolvePropertyAlias(Part);
-	}
-
-	if (PathParts.Num() == 0)
-	{
-		OutError = TEXT("Empty property path");
+		OutError = SplitErr;
 		return false;
 	}
 
@@ -1467,15 +1512,73 @@ bool FMCPTool_BlueprintModify::SetComponentPropertyFromJson(UObject* Template, c
 	UStruct* CurrentStruct = Template->GetClass();
 	void* CurrentContainer = Template;
 
-	for (int32 i = 0; i < PathParts.Num() - 1; ++i)
+	for (int32 i = 0; i < Segments.Num() - 1; ++i)
 	{
-		FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*PathParts[i]));
+		FString SegName;
+		int32 SegIndex = INDEX_NONE;
+		FString ParseErr;
+		if (!FPropertyPathParser::ParseSegment(Segments[i], SegName, SegIndex, ParseErr))
+		{
+			OutError = ParseErr;
+			return false;
+		}
+		SegName = ResolvePropertyAlias(SegName);
+
+		FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*SegName));
 		if (!Prop)
 		{
-			OutError = FString::Printf(TEXT("Property '%s' not found on %s"), *PathParts[i], *CurrentStruct->GetName());
+			OutError = FString::Printf(TEXT("Property '%s' not found on %s"), *SegName, *CurrentStruct->GetName());
 			return false;
 		}
 
+		// Indexed segment — must be an array; advance into the indexed element.
+		if (SegIndex != INDEX_NONE)
+		{
+			FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop);
+			if (!ArrayProp)
+			{
+				OutError = FString::Printf(TEXT("Property '%s' has index [%d] but is not an array (type: %s)"),
+					*SegName, SegIndex, *Prop->GetCPPType());
+				return false;
+			}
+
+			void* ArrayValuePtr = ArrayProp->ContainerPtrToValuePtr<void>(CurrentContainer);
+			FScriptArrayHelper ArrayHelper(ArrayProp, ArrayValuePtr);
+			if (SegIndex >= ArrayHelper.Num())
+			{
+				OutError = FString::Printf(TEXT("Index [%d] out of bounds for '%s' (size: %d)"),
+					SegIndex, *SegName, ArrayHelper.Num());
+				return false;
+			}
+
+			void* ElemPtr = ArrayHelper.GetRawPtr(SegIndex);
+			FProperty* InnerProp = ArrayProp->Inner;
+
+			if (FStructProperty* StructInner = CastField<FStructProperty>(InnerProp))
+			{
+				CurrentContainer = ElemPtr;
+				CurrentStruct = StructInner->Struct;
+				continue;
+			}
+			if (FObjectProperty* ObjInner = CastField<FObjectProperty>(InnerProp))
+			{
+				UObject* NestedObj = ObjInner->GetObjectPropertyValue(ElemPtr);
+				if (!NestedObj)
+				{
+					OutError = FString::Printf(TEXT("Element '%s[%d]' is null"), *SegName, SegIndex);
+					return false;
+				}
+				CurrentContainer = NestedObj;
+				CurrentStruct = NestedObj->GetClass();
+				continue;
+			}
+
+			OutError = FString::Printf(TEXT("Cannot navigate into '%s[%d]' (inner type: %s)"),
+				*SegName, SegIndex, *InnerProp->GetCPPType());
+			return false;
+		}
+
+		// No index — existing struct/object navigation.
 		FStructProperty* StructProp = CastField<FStructProperty>(Prop);
 		if (StructProp)
 		{
@@ -1490,7 +1593,7 @@ bool FMCPTool_BlueprintModify::SetComponentPropertyFromJson(UObject* Template, c
 			UObject* NestedObj = ObjProp->GetObjectPropertyValue(ObjProp->ContainerPtrToValuePtr<void>(CurrentContainer));
 			if (!NestedObj)
 			{
-				OutError = FString::Printf(TEXT("Nested object '%s' is null"), *PathParts[i]);
+				OutError = FString::Printf(TEXT("Nested object '%s' is null"), *SegName);
 				return false;
 			}
 			CurrentContainer = NestedObj;
@@ -1498,20 +1601,60 @@ bool FMCPTool_BlueprintModify::SetComponentPropertyFromJson(UObject* Template, c
 			continue;
 		}
 
-		OutError = FString::Printf(TEXT("Cannot navigate through '%s' (type: %s) — not a struct or object property"), *PathParts[i], *Prop->GetCPPType());
+		OutError = FString::Printf(TEXT("Cannot navigate through '%s' (type: %s) — not a struct or object property"), *SegName, *Prop->GetCPPType());
 		return false;
 	}
 
-	// Find the leaf property
-	const FString& LeafName = PathParts.Last();
-	FProperty* LeafProp = CurrentStruct->FindPropertyByName(FName(*LeafName));
-	if (!LeafProp)
+	// Leaf segment.
+	FString LeafName;
+	int32 LeafIndex = INDEX_NONE;
+	FString LeafErr;
+	if (!FPropertyPathParser::ParseSegment(Segments.Last(), LeafName, LeafIndex, LeafErr))
+	{
+		OutError = LeafErr;
+		return false;
+	}
+	LeafName = ResolvePropertyAlias(LeafName);
+
+	FProperty* ResolvedLeaf = CurrentStruct->FindPropertyByName(FName(*LeafName));
+	if (!ResolvedLeaf)
 	{
 		OutError = FString::Printf(TEXT("Property '%s' not found on %s"), *LeafName, *CurrentStruct->GetName());
 		return false;
 	}
 
-	void* ValuePtr = LeafProp->ContainerPtrToValuePtr<void>(CurrentContainer);
+	// LeafProp / ValuePtr feed the type-dispatch ladder below. With an index, the dispatch
+	// targets the array's inner property at the indexed element pointer; without an index,
+	// it targets the property itself at its container offset (legacy behavior).
+	FProperty* LeafProp = ResolvedLeaf;
+	void* ValuePtr = nullptr;
+
+	if (LeafIndex != INDEX_NONE)
+	{
+		FArrayProperty* ArrayProp = CastField<FArrayProperty>(ResolvedLeaf);
+		if (!ArrayProp)
+		{
+			OutError = FString::Printf(TEXT("Leaf '%s' has index [%d] but is not an array (type: %s)"),
+				*LeafName, LeafIndex, *ResolvedLeaf->GetCPPType());
+			return false;
+		}
+
+		void* ArrayValuePtr = ArrayProp->ContainerPtrToValuePtr<void>(CurrentContainer);
+		FScriptArrayHelper ArrayHelper(ArrayProp, ArrayValuePtr);
+		if (LeafIndex >= ArrayHelper.Num())
+		{
+			OutError = FString::Printf(TEXT("Leaf index [%d] out of bounds for '%s' (size: %d)"),
+				LeafIndex, *LeafName, ArrayHelper.Num());
+			return false;
+		}
+
+		LeafProp = ArrayProp->Inner;
+		ValuePtr = ArrayHelper.GetRawPtr(LeafIndex);
+	}
+	else
+	{
+		ValuePtr = ResolvedLeaf->ContainerPtrToValuePtr<void>(CurrentContainer);
+	}
 
 	// Type dispatch
 	if (FNumericProperty* NumProp = CastField<FNumericProperty>(LeafProp))
