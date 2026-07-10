@@ -317,9 +317,9 @@ FMCPToolResult FMCPToolRegistry::ExecuteTool(const FString& ToolName, const TSha
 		TArray<FString> UnknownParams;
 		for (const auto& KV : Params->Values)
 		{
-			if (!DeclaredParams.Contains(KV.Key))
+			if (!DeclaredParams.Contains(FString(KV.Key)))
 			{
-				UnknownParams.Add(KV.Key);
+				UnknownParams.Add(FString(KV.Key));
 			}
 		}
 

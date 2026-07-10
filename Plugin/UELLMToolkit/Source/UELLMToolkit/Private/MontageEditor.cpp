@@ -777,7 +777,7 @@ bool FMontageEditor::SetPropertiesOnObject(UObject* Object,
 
 	for (const auto& Pair : Properties->Values)
 	{
-		const FString& Key = Pair.Key;
+		const FString Key(Pair.Key);
 		const TSharedPtr<FJsonValue>& Value = Pair.Value;
 
 		if (Key == TEXT("_class"))

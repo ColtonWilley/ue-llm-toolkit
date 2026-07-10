@@ -584,7 +584,7 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteAddNode(const TSharedRef<FJsonOb
 				if (PinValue.Value->TryGetString(PinValueStr))
 				{
 					FString PinError;
-					FBlueprintUtils::SetPinDefaultValue(Graph, NodeId, PinValue.Key, PinValueStr, PinError);
+					FBlueprintUtils::SetPinDefaultValue(Graph, NodeId, FString(PinValue.Key), PinValueStr, PinError);
 				}
 			}
 		}
@@ -739,7 +739,7 @@ bool FMCPTool_BlueprintModify::CreateNodesFromSpec(
 				if (PinValue.Value->TryGetString(PinValueStr))
 				{
 					FString PinError;
-					FBlueprintUtils::SetPinDefaultValue(Graph, NodeId, PinValue.Key, PinValueStr, PinError);
+					FBlueprintUtils::SetPinDefaultValue(Graph, NodeId, FString(PinValue.Key), PinValueStr, PinError);
 				}
 			}
 		}
@@ -1817,7 +1817,7 @@ bool FMCPTool_BlueprintModify::SetStructValue(FStructProperty* StructProp, void*
 		for (const auto& Pair : (*ObjVal)->Values)
 		{
 			if (!bFirst) TextRepresentation += TEXT(",");
-			TextRepresentation += Pair.Key.ToUpper() + TEXT("=");
+			TextRepresentation += FString(Pair.Key).ToUpper() + TEXT("=");
 
 			double NumVal;
 			FString StrVal;
@@ -1903,14 +1903,14 @@ FMCPToolResult FMCPTool_BlueprintModify::ExecuteAddDebugPrint(const TSharedRef<F
 					FString ParamVal;
 					if (Pair.Value->TryGetString(ParamVal))
 					{
-						FuncItem.Params.Add(Pair.Key, ParamVal);
+						FuncItem.Params.Add(FString(Pair.Key), ParamVal);
 					}
 					else
 					{
 						double NumVal;
 						if (Pair.Value->TryGetNumber(NumVal))
 						{
-							FuncItem.Params.Add(Pair.Key, FString::FromInt((int32)NumVal));
+							FuncItem.Params.Add(FString(Pair.Key), FString::FromInt((int32)NumVal));
 						}
 					}
 				}

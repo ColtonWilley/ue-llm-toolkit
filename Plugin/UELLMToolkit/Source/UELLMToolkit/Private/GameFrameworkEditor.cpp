@@ -621,7 +621,7 @@ TSharedPtr<FJsonObject> FGameFrameworkEditor::SetRow(const FString& TablePath, c
 			}
 			return ErrorResult(FString::Printf(TEXT("Failed to set '%s': %s"), *Pair.Key, *FieldError));
 		}
-		UpdatedFields.Add(Pair.Key);
+		UpdatedFields.Add(FString(Pair.Key));
 	}
 
 	if (bIsNewRow)

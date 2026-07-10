@@ -670,7 +670,7 @@ FMCPToolResult FMCPTool_GameplayDebug::ExecuteRunSequence(const TSharedRef<FJson
 			auto ApplyFileDefault = [&](const FString& Key) {
 				if (!Params->HasField(Key) && FileRoot->HasField(Key))
 				{
-					Params->SetField(Key, FileRoot->Values.FindRef(Key));
+					Params->SetField(Key, FileRoot->TryGetField(Key));
 				}
 			};
 			ApplyFileDefault(TEXT("name"));

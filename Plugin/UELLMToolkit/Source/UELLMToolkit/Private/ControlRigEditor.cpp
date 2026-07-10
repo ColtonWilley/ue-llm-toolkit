@@ -12,7 +12,11 @@
 #include "RigVMModel/RigVMPin.h"
 #include "RigVMModel/RigVMLink.h"
 #include "RigVMModel/RigVMController.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8
+#include "RigVMCore/RigVMVariableDescription.h"
+#else
 #include "RigVMModel/RigVMVariableDescription.h"
+#endif
 #include "Rigs/RigHierarchy.h"
 
 // ============================================================================

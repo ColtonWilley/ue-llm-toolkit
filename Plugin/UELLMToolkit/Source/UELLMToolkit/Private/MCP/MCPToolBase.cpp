@@ -363,7 +363,7 @@ bool FMCPToolBase::SetMapPropertyFromJson(
 		uint8* PairKeyPtr = MapHelper.GetKeyPtr(Index);
 		uint8* PairValuePtr = MapHelper.GetValuePtr(Index);
 
-		TSharedPtr<FJsonValue> KeyJsonValue = MakeShared<FJsonValueString>(Pair.Key);
+		TSharedPtr<FJsonValue> KeyJsonValue = MakeShared<FJsonValueString>(FString(Pair.Key));
 		FString KeyContext = FString::Printf(TEXT("%s[key='%s']"), *PropertyPath, *Pair.Key);
 		if (!SetSinglePropertyFromJson(KeyProp, PairKeyPtr, KeyJsonValue, KeyContext, OutError))
 		{

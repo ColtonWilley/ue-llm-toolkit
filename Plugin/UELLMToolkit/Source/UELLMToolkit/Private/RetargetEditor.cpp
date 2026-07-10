@@ -1470,7 +1470,25 @@ TSharedPtr<FJsonObject> FRetargetEditor::BatchRetarget(const FString& Retargeter
 	}
 
 	// Run DuplicateAndRetarget
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8
+	// 5.8 added TargetPath/bUseSourcePath params and deprecated this API in favor of RunBatchRetarget
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	TArray<FAssetData> NewAssets = UIKRetargetBatchOperation::DuplicateAndRetarget(
+		AssetsToRetarget,
+		SourceMesh,
+		TargetMesh,
+		Retargeter,
+		TEXT(""),       // Search
+		TEXT(""),       // Replace
+		Prefix,         // Prefix
+		TEXT(""),       // Suffix
+		TEXT(""),       // TargetPath
+		false,          // bUseSourcePath
+		false,          // bIncludeReferencedAssets
+		true            // bOverwriteExistingFiles
+	);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 7
 	TArray<FAssetData> NewAssets = UIKRetargetBatchOperation::DuplicateAndRetarget(
 		AssetsToRetarget,
 		SourceMesh,
