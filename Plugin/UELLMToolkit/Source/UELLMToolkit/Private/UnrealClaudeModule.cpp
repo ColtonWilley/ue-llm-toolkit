@@ -240,6 +240,15 @@ void FUnrealClaudeModule::UnregisterMenus()
 
 void FUnrealClaudeModule::StartMCPServer()
 {
+	// Commandlets (cook, resave, etc.) run as a second process alongside the editor,
+	// which already owns the MCP port. Binding fails and the logged error escalates
+	// the commandlet's exit code to 1, which UAT reports as "Cook failed".
+	if (IsRunningCommandlet())
+	{
+		UE_LOG(LogUnrealClaude, Log, TEXT("Skipping MCP Server startup (running as commandlet)"));
+		return;
+	}
+
 	if (MCPServer.IsValid())
 	{
 		UE_LOG(LogUnrealClaude, Warning, TEXT("MCP Server already exists"));
