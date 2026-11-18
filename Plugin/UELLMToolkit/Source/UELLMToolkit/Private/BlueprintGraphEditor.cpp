@@ -923,6 +923,13 @@ UEdGraphNode* FBlueprintGraphEditor::CreateVariableGetNode(
 		bFound = (Blueprint->ParentClass->FindPropertyByName(VarName) != nullptr);
 	}
 
+	// Components added in the Blueprint (SCS) aren't in NewVariables, but the
+	// skeleton class has a property for each of them.
+	if (!bFound && Blueprint->SkeletonGeneratedClass)
+	{
+		bFound = (Blueprint->SkeletonGeneratedClass->FindPropertyByName(VarName) != nullptr);
+	}
+
 	if (!bFound)
 	{
 		OutError = FString::Printf(TEXT("Variable '%s' not found in Blueprint or parent class"), *VariableName);
