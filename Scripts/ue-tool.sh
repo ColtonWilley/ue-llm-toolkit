@@ -269,7 +269,10 @@ cmd_save() {
     local resp
     resp=$(curl -s --max-time 30 -X POST "$TOOL_ENDPOINT/asset" \
         -H "Content-Type: application/json" \
-        -d '{"operation":"save_all"}' 2>&1)
+        -d '{"operation":"save_all"}' 2>&1) || {
+        echo "[ERROR] Save request failed or timed out" >&2
+        return 1
+    }
     if echo "$resp" | grep -q '"success"\s*:\s*false'; then
         echo "[ERROR] Save failed: $resp" >&2
         return 1
