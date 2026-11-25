@@ -85,6 +85,27 @@ UEdGraph* FBlueprintGraphEditor::FindGraph(
 		}
 	}
 
+	// Macros and collapsed graphs are not in the arrays above
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+	UEdGraph* NestedGraph = nullptr;
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (Graph && Graph->GetName() == GraphName)
+		{
+			if (NestedGraph)
+			{
+				OutError = FString::Printf(TEXT("Graph name '%s' is not unique"), *GraphName);
+				return nullptr;
+			}
+			NestedGraph = Graph;
+		}
+	}
+	if (NestedGraph)
+	{
+		return NestedGraph;
+	}
+
 	// Build list of available graphs for error message
 	TArray<FString> AvailableGraphs;
 	for (UEdGraph* Graph : Graphs)
@@ -900,6 +921,13 @@ UEdGraphNode* FBlueprintGraphEditor::CreateVariableGetNode(
 	if (!bFound && Blueprint->ParentClass)
 	{
 		bFound = (Blueprint->ParentClass->FindPropertyByName(VarName) != nullptr);
+	}
+
+	// Components added in the Blueprint (SCS) aren't in NewVariables, but the
+	// skeleton class has a property for each of them.
+	if (!bFound && Blueprint->SkeletonGeneratedClass)
+	{
+		bFound = (Blueprint->SkeletonGeneratedClass->FindPropertyByName(VarName) != nullptr);
 	}
 
 	if (!bFound)
