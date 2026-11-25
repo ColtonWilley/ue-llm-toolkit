@@ -840,10 +840,10 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleSetStateAnimation(const FStri
 			if (Params->TryGetObjectField(TEXT("parameter_bindings"), BindingsObj))
 			{
 				// Get first value as the binding
-				for (const auto& Pair : (*BindingsObj)->Values)
+				auto FirstBinding = (*BindingsObj)->Values.CreateConstIterator();
+				if (FirstBinding)
 				{
-					Binding = Pair.Value->AsString();
-					break;
+					Binding = FirstBinding->Value->AsString();
 				}
 			}
 		}
