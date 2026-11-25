@@ -16,13 +16,13 @@
 	"Installed": false,
 	"EnabledByDefault": true,
 	"EngineVersion": "5.6.0",
-	"SupportedTargetPlatforms": [ "Win64", "Linux" ],
+	"SupportedTargetPlatforms": [ "Win64", "Linux", "Mac" ],
 	"Modules": [
 		{
 			"Name": "UELLMToolkit",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit",
-			"PlatformAllowList": [ "Win64", "Linux" ]
+			"PlatformAllowList": [ "Win64", "Linux", "Mac" ]
 		}
 	],
 	"Plugins": [

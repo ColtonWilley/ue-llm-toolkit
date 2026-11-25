@@ -7,10 +7,12 @@
 #   ue-tool.sh call --raw <tool> '<json>' — call a tool (raw JSON output)
 #   ue-tool.sh generate-ref             — regenerate tool reference markdown
 #   ue-tool.sh save                     — save all assets via plugin
-#   ue-tool.sh close                    — save + graceful editor shutdown
+#   ue-tool.sh close [--force]          — save + graceful editor shutdown
 #   ue-tool.sh launch                   — start editor, optionally wait for plugin
-#   ue-tool.sh restart                  — close + launch
-#   ue-tool.sh status                   — report editor/VS/plugin state
+#   ue-tool.sh restart [--force]        — close + launch
+#   ue-tool.sh status                   — report editor, plugin and VS (Windows) or game (Mac/Linux) state
+#
+# Mac/Linux: close and restart refuse while a standalone game is running; --force overrides.
 
 set -euo pipefail
 
@@ -28,6 +30,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 GRACEFUL_TIMEOUT=30
 PLUGIN_WAIT_TIMEOUT=120
+EDITOR_PROCESS="UnrealEditor"
+
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;;
+    *) IS_WINDOWS=false ;;
+esac
 
 # --- Editor/project detection ---
 
@@ -53,12 +61,16 @@ find_editor() {
         echo "$UE_EDITOR"
         return 0
     fi
-    # Check default UE 5.7 install location
-    local p="C:/Program Files/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe"
-    if [[ -f "$p" ]]; then
-        echo "$p"
-        return 0
-    fi
+    # Check default UE 5.7 install locations
+    local p
+    for p in \
+        "C:/Program Files/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe" \
+        "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"; do
+        if [[ -f "$p" ]]; then
+            echo "$p"
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -66,8 +78,47 @@ is_running() {
     tasklist //FI "IMAGENAME eq $1" //NH 2>/dev/null | grep -qi "$1"
 }
 
-editor_running() { is_running "UnrealEditor.exe"; }
-vs_running()     { is_running "devenv.exe"; }
+# List UE process PIDs on Mac/Linux. Standalone games run the same binary with
+# -game or -server, so the argument picks "editor" or "game".
+ue_pids() {
+    local kind="$1" pid cmd
+    for pid in $(pgrep -x "$EDITOR_PROCESS" || true); do
+        cmd=$(ps -o command= -p "$pid" || true)
+        [[ -n "$cmd" ]] || continue
+        case "$cmd " in
+            *" -game "*|*" -server "*) [[ "$kind" == game ]] && echo "$pid" ;;
+            *) [[ "$kind" == editor ]] && echo "$pid" ;;
+        esac
+    done
+    return 0
+}
+
+editor_running() {
+    if [[ "$IS_WINDOWS" == true ]]; then
+        is_running "UnrealEditor.exe"
+    else
+        [[ -n "$(ue_pids editor)" ]]
+    fi
+}
+
+vs_running() { is_running "devenv.exe"; }
+
+# UE treats SIGTERM as an exit request, but a second one exits hard: send it only once.
+request_editor_exit() {
+    if [[ "$IS_WINDOWS" == true ]]; then
+        taskkill //IM UnrealEditor.exe > /dev/null 2>&1 || true
+    else
+        kill -TERM $(ue_pids editor) 2>/dev/null || true
+    fi
+}
+
+force_kill_editor() {
+    if [[ "$IS_WINDOWS" == true ]]; then
+        taskkill //F //IM UnrealEditor.exe > /dev/null 2>&1 || true
+    else
+        kill -KILL $(ue_pids editor) 2>/dev/null || true
+    fi
+}
 
 plugin_responding() {
     curl -s --max-time 3 "$STATUS_ENDPOINT" > /dev/null 2>&1
@@ -278,9 +329,21 @@ cmd_save() {
 }
 
 cmd_close() {
+    local force="${1:-}"
+
     if ! editor_running; then
         echo "[CLOSE] Editor not running"
         return 0
+    fi
+
+    if [[ "$IS_WINDOWS" == false && "$force" != "--force" ]]; then
+        local game_pids
+        game_pids=$(ue_pids game)
+        if [[ -n "$game_pids" ]]; then
+            echo "[ERROR] Standalone game running (PID $(echo $game_pids)) — closing the editor may stop it" >&2
+            echo "[ERROR] Stop the game first, or pass --force" >&2
+            return 1
+        fi
     fi
 
     if plugin_responding; then
@@ -295,7 +358,7 @@ cmd_close() {
     fi
 
     echo "[CLOSE] Requesting graceful editor shutdown..."
-    taskkill //IM UnrealEditor.exe > /dev/null 2>&1 || true
+    request_editor_exit
 
     local waited=0
     while editor_running && [ $waited -lt $GRACEFUL_TIMEOUT ]; do
@@ -305,7 +368,7 @@ cmd_close() {
 
     if editor_running; then
         echo "[WARN] Editor didn't exit gracefully after ${GRACEFUL_TIMEOUT}s — force killing"
-        taskkill //F //IM UnrealEditor.exe > /dev/null 2>&1 || true
+        force_kill_editor
         sleep 3
     fi
 
@@ -340,7 +403,7 @@ cmd_launch() {
     # Find editor and project
     local editor uproject
     editor=$(find_editor) || {
-        echo "[ERROR] Could not find UnrealEditor.exe. Set UE_EDITOR env var." >&2
+        echo "[ERROR] Could not find the Unreal Editor binary. Set UE_EDITOR env var." >&2
         exit 1
     }
     uproject=$(find_uproject) || {
@@ -350,8 +413,13 @@ cmd_launch() {
 
     echo "[LAUNCH] Starting editor..."
     echo "[LAUNCH] Project: $uproject"
-    "$editor" "$uproject" &>/dev/null &
-    disown
+    if [[ "$editor" == */Contents/MacOS/* ]]; then
+        # -n: without it, open just activates a standalone game running the same app
+        open -n "${editor%%/Contents/MacOS/*}" --args "$uproject"
+    else
+        "$editor" "$uproject" &>/dev/null &
+        disown
+    fi
 
     echo "[LAUNCH] Waiting for plugin connectivity..."
     local waited=0
@@ -369,16 +437,23 @@ cmd_launch() {
 }
 
 cmd_restart() {
-    cmd_close || return 1
+    cmd_close "${1:-}" || return 1
     cmd_launch
 }
 
 cmd_status() {
-    local ed="not running" vs="not running" plug="not responding"
+    local ed="not running" plug="not responding"
     editor_running && ed="running"
-    vs_running && vs="running"
     plugin_responding && plug="responding"
-    echo "[STATUS] Editor: $ed | VS: $vs | Plugin: $plug"
+    if [[ "$IS_WINDOWS" == true ]]; then
+        local vs="not running"
+        vs_running && vs="running"
+        echo "[STATUS] Editor: $ed | VS: $vs | Plugin: $plug"
+    else
+        local game="not running"
+        [[ -n "$(ue_pids game)" ]] && game="running"
+        echo "[STATUS] Editor: $ed | Game: $game | Plugin: $plug"
+    fi
 }
 
 cmd_generate_ref() {
@@ -526,19 +601,19 @@ case "${1:-}" in
         cmd_save
         ;;
     close)
-        cmd_close
+        cmd_close "${2:-}"
         ;;
     launch)
         cmd_launch
         ;;
     restart)
-        cmd_restart
+        cmd_restart "${2:-}"
         ;;
     status)
         cmd_status
         ;;
     *)
-        echo "Usage: ue-tool.sh [--port PORT] {list|help|call|generate-ref|save|close|launch|restart|status}" >&2
+        echo "Usage: ue-tool.sh [--port PORT] {list|help|call|generate-ref|save|close [--force]|launch|restart [--force]|status}" >&2
         exit 1
         ;;
 esac
